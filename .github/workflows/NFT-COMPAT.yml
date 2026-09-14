@@ -16,8 +16,8 @@ jobs:
 
       - name: Init build environment
         run: |
-          sudo apt update
-          sudo apt install -y \
+          sudo apt-get update
+          sudo apt-get install -y \
             build-essential \
             clang \
             flex \
@@ -26,14 +26,25 @@ jobs:
             gettext \
             libncurses-dev \
             libssl-dev \
-            python3-distutils \
+            libelf-dev \
+            libpython3-dev \
             rsync \
             unzip \
             zlib1g-dev \
             file \
             wget \
             curl \
-            git
+            git \
+            ccache \
+            python3 \
+            python3-pip \
+            python3-ply \
+            python3-pyelftools \
+            pkgconf \
+            patch \
+            perl \
+            tar \
+            xz-utils
 
       - name: Clone ImmortalWrt
         run: |
@@ -55,7 +66,6 @@ jobs:
           CONFIG_TARGET_qualcommax=y
           CONFIG_TARGET_qualcommax_ipq60xx=y
           CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02=y
-
           CONFIG_PACKAGE_kmod-nft-compat=m
           EOF
 
