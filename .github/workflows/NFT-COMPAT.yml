@@ -1,0 +1,121 @@
+name: Build NFT Compat
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout CI
+        uses: actions/checkout@v4
+
+      - name: Init build environment
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential \
+            clang \
+            flex \
+            bison \
+            gawk \
+            gettext \
+            libncurses-dev \
+            libssl-dev \
+            python3-distutils \
+            rsync \
+            unzip \
+            zlib1g-dev \
+            file \
+            wget \
+            curl \
+            git
+
+      - name: Clone ImmortalWrt
+        run: |
+          git clone --depth=1 \
+            https://github.com/VIKINGYFY/immortalwrt.git \
+            wrt
+
+          cd wrt
+
+          echo "=== SOURCE ==="
+          git rev-parse HEAD
+          git log -1 --oneline
+
+      - name: Configure target
+        run: |
+          cd wrt
+
+          cat > .config <<'EOF'
+          CONFIG_TARGET_qualcommax=y
+          CONFIG_TARGET_qualcommax_ipq60xx=y
+          CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02=y
+
+          CONFIG_PACKAGE_kmod-nft-compat=m
+          EOF
+
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+          make defconfig
+
+          echo
+          echo "=== KERNEL VERSION ==="
+          grep '^CONFIG_LINUX_' .config || true
+
+          echo
+          echo "=== NFT COMPAT ==="
+          grep 'NFT_COMPAT' .config || true
+
+      - name: Build nft-compat
+        run: |
+          cd wrt
+
+          make package/kernel/linux/compile \
+            V=s \
+            -j2
+
+      - name: Find package
+        run: |
+          cd wrt
+
+          echo "=== SEARCH APK ==="
+          find bin packages build_dir -type f \
+            \( -name '*nft-compat*.apk' -o -name 'nft_compat.ko' \) \
+            2>/dev/null || true
+
+          echo
+          echo "=== KERNEL MODULE ==="
+          find . -type f \
+            -name 'nft_compat.ko' \
+            2>/dev/null || true
+
+      - name: Collect result
+        run: |
+          mkdir -p result
+
+          find wrt/bin -type f \
+            -name '*nft-compat*.apk' \
+            -exec cp -v {} result/ \; \
+            2>/dev/null || true
+
+          find wrt -type f \
+            -name 'nft_compat.ko' \
+            -exec cp -v {} result/ \; \
+            2>/dev/null || true
+
+          echo
+          echo "=== RESULT ==="
+          ls -lah result
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nft-compat
+          path: result/
+          if-no-files-found: error
