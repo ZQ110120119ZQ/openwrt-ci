@@ -3,46 +3,23 @@ name: Build NFT Compat 6.12.106
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   build:
     runs-on: ubuntu-24.04
 
     steps:
 
-      - name: Checkout CI
-        uses: actions/checkout@v4
-
-      # ==========================================================
-      # 清理 Runner 空间
-      # ==========================================================
       - name: Free disk space
         run: |
-          echo "=== DISK BEFORE ==="
-          df -h /
-
-          sudo rm -rf /usr/local/lib/android 2>/dev/null || true
-          sudo rm -rf /usr/share/dotnet 2>/dev/null || true
-          sudo rm -rf /opt/ghc 2>/dev/null || true
-          sudo rm -rf /usr/local/share/powershell 2>/dev/null || true
-          sudo rm -rf /opt/hostedtoolcache 2>/dev/null || true
-
-          sudo docker system prune -af 2>/dev/null || true
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
           sudo apt-get clean
+          df -h
 
-          echo
-          echo "=== DISK AFTER ==="
-          df -h /
-
-      # ==========================================================
-      # 编译环境
-      # ==========================================================
-      - name: Init build environment
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
             build-essential \
             clang \
@@ -50,103 +27,56 @@ jobs:
             bison \
             gawk \
             gettext \
-            libncurses-dev \
-            libssl-dev \
-            libelf-dev \
-            libpython3-dev \
-            rsync \
-            unzip \
-            zlib1g-dev \
-            file \
-            wget \
-            curl \
             git \
+            curl \
+            wget \
+            unzip \
+            rsync \
+            file \
             python3 \
             python3-pip \
-            python3-ply \
-            python3-pyelftools \
-            pkgconf \
-            patch \
-            perl \
-            tar \
-            xz-utils \
-            bc \
-            ccache
+            python3-setuptools \
+            python3-distutils \
+            libncurses-dev \
+            libssl-dev \
+            zlib1g-dev \
+            libelf-dev \
+            device-tree-compiler \
+            swig \
+            time \
+            ccache \
+            xz-utils
 
-          sudo apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
-
-          echo
-          echo "=== BUILD ENV READY ==="
-          df -h /
-
-      # ==========================================================
-      # 精确拉取 3c810bd
-      # 对应 Linux 6.12.106
-      # ==========================================================
       - name: Clone exact ImmortalWrt source
         run: |
           set -e
 
-          echo "=========================================="
-          echo "CLONE IMMORTALWRT"
-          echo "=========================================="
-
-          git clone \
-            https://github.com/VIKINGYFY/immortalwrt.git \
-            wrt
+          git clone https://github.com/VIKINGYFY/immortalwrt.git wrt
 
           cd wrt
-
-          echo
-          echo "=========================================="
-          echo "RESOLVE COMMIT 3c810bd"
-          echo "=========================================="
 
           FULL_SHA="$(curl -fsSL \
             https://api.github.com/repos/VIKINGYFY/immortalwrt/commits/3c810bd \
             | python3 -c 'import sys,json; print(json.load(sys.stdin)["sha"])')"
 
-          echo "FULL SHA: $FULL_SHA"
-
-          if [ -z "$FULL_SHA" ]; then
-            echo "ERROR: Cannot resolve commit 3c810bd"
-            exit 1
-          fi
-
-          echo
           echo "=========================================="
-          echo "FETCH EXACT COMMIT"
+          echo "EXACT COMMIT"
           echo "=========================================="
+          echo "$FULL_SHA"
 
           git fetch --no-tags origin "$FULL_SHA"
-
           git checkout --detach "$FULL_SHA"
 
           echo
           echo "=========================================="
-          echo "SOURCE COMMIT"
+          echo "SOURCE VERSION"
           echo "=========================================="
-
           git rev-parse HEAD
           git log -1 --oneline
 
-          echo
-          echo "=========================================="
-          echo "CHECK KERNEL VERSION"
-          echo "=========================================="
-
-          grep -R \
-            "6.12.106" \
-            include/kernel-version.mk \
-            target/linux \
-            2>/dev/null | head -20 || true
-
-      # ==========================================================
-      # 配置目标
-      # ==========================================================
       - name: Configure target
         run: |
+          set -e
           cd wrt
 
           cat > .config <<'EOF'
@@ -157,193 +87,110 @@ jobs:
           CONFIG_PACKAGE_kmod-nft-compat=m
           EOF
 
-          echo "=========================================="
-          echo "UPDATE FEEDS"
-          echo "=========================================="
-
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-          echo
-          echo "=========================================="
-          echo "DEFCONFIG"
-          echo "=========================================="
-
           make defconfig
 
           echo
           echo "=========================================="
-          echo "TARGET"
-          echo "=========================================="
-
-          grep '^CONFIG_TARGET_' .config | \
-            grep -E 'qualcommax|ipq60xx|jdcloud' || true
-
-          echo
-          echo "=========================================="
-          echo "KERNEL"
-          echo "=========================================="
-
-          grep '^CONFIG_LINUX_' .config || true
-
-          echo
-          echo "=========================================="
-          echo "NFT"
+          echo "NFT CONFIG"
           echo "=========================================="
 
           grep -E \
-            'NFT_COMPAT|NF_TABLES_COMPAT|NETFILTER_XTABLES|NF_TABLES' \
+            'CONFIG_PACKAGE_kmod-nft-compat|CONFIG_KERNEL_NF_TABLES_COMPAT|CONFIG_NF_TABLES_COMPAT' \
             .config || true
 
-      # ==========================================================
-      # 编译 HOST TOOLS
-      # ==========================================================
       - name: Build host tools
         run: |
+          set -e
           cd wrt
+          make tools/install -j2 V=s
 
-          echo "=========================================="
-          echo "BUILD HOST TOOLS"
-          echo "=========================================="
-
-          make tools/install V=s -j2
-
-          echo
-          echo "Checking host tools..."
-
-          test -x staging_dir/host/bin/m4
-          test -x staging_dir/host/bin/flex
-
-          echo "m4:"
-          staging_dir/host/bin/m4 --version | head -1
-
-          echo "flex:"
-          staging_dir/host/bin/flex --version | head -1
-
-      # ==========================================================
-      # 编译工具链
-      # ==========================================================
       - name: Build toolchain
         run: |
+          set -e
           cd wrt
+          make toolchain/install -j2 V=s
 
-          echo "=========================================="
-          echo "BUILD TOOLCHAIN"
-          echo "=========================================="
-
-          make toolchain/install V=s -j2
-
-          echo
-          echo "Checking cross compiler..."
-
-          GCC="$(find staging_dir/toolchain-* \
-            -type f \
-            -name 'aarch64-openwrt-linux-musl-gcc' \
-            -print -quit)"
-
-          if [ -z "$GCC" ]; then
-            echo "ERROR: aarch64-openwrt-linux-musl-gcc NOT FOUND"
-            exit 1
-          fi
-
-          echo "GCC:"
-          echo "$GCC"
-
-          "$GCC" --version | head -1
-
-      # ==========================================================
-      # 准备内核
-      # ==========================================================
       - name: Prepare Linux 6.12.106
         run: |
+          set -e
           cd wrt
-
-          echo "=========================================="
-          echo "PREPARE KERNEL"
-          echo "=========================================="
-
           make target/linux/prepare V=s
 
-          echo
-          echo "Kernel source:"
-          find build_dir/target-* \
-            -maxdepth 3 \
-            -type d \
-            -name 'linux-6.12.*' \
-            -print
-
-      # ==========================================================
-      # 编译 Linux 6.12.106
-      # ==========================================================
       - name: Build Linux 6.12.106
         run: |
+          set -e
           cd wrt
-
-          echo "=========================================="
-          echo "BUILD LINUX 6.12.106"
-          echo "=========================================="
-
-          df -h /
-          df -ih /
 
           make target/linux/compile V=s -j2
 
           echo
           echo "=========================================="
-          echo "KERNEL BUILD COMPLETE"
+          echo "SEARCH nft_compat.ko"
           echo "=========================================="
 
           find build_dir \
             -type f \
             -name 'nft_compat.ko' \
-            -print 2>/dev/null || true
-
-      # ==========================================================
-      # 构建 kmod-nft-compat
-      # ==========================================================
-      - name: Build nft-compat package
-        run: |
-          cd wrt
-
-          echo "=========================================="
-          echo "BUILD KMOD-NFT-COMPAT"
-          echo "=========================================="
-
-          make package/kernel/linux/compile V=s -j2
-
-      # ==========================================================
-      # 查找结果
-      # ==========================================================
-      - name: Verify nft compat
-        run: |
-          cd wrt
-
-          echo "=========================================="
-          echo "SEARCH APK"
-          echo "=========================================="
-
-          find bin packages \
-            -type f \
-            \( \
-              -iname '*nft*compat*.apk' \
-              -o \
-              -iname '*nft*compat*.ipk' \
-            \) \
-            -print 2>/dev/null || true
+            -print \
+            2>/dev/null || true
 
           echo
           echo "=========================================="
-          echo "SEARCH KO"
+          echo "CHECK KERNEL CONFIG"
           echo "=========================================="
 
-          find . \
+          find build_dir \
+            -type f \
+            -name '.config' \
+            -path '*linux-6.12.106*' \
+            -exec grep -E \
+            'CONFIG_NF_TABLES_COMPAT|CONFIG_NFT_COMPAT' {} \; \
+            2>/dev/null || true
+
+      - name: Build nft compat only
+        run: |
+          set -e
+          cd wrt
+
+          echo
+          echo "=========================================="
+          echo "LOCATE nft_compat.ko"
+          echo "=========================================="
+
+          NFT_KO="$(find build_dir \
             -type f \
             -name 'nft_compat.ko' \
-            -print 2>/dev/null || true
+            -print \
+            -quit \
+            2>/dev/null || true)"
 
-      # ==========================================================
-      # 收集文件
-      # ==========================================================
+          if [ -z "$NFT_KO" ]; then
+            echo
+            echo "ERROR: nft_compat.ko was not generated."
+            echo
+            echo "Kernel config:"
+            find build_dir \
+              -type f \
+              -name '.config' \
+              -path '*linux-6.12.106*' \
+              -exec grep -E \
+              'CONFIG_NF_TABLES_COMPAT|CONFIG_NFT_COMPAT' {} \; \
+              2>/dev/null || true
+            exit 1
+          fi
+
+          echo
+          echo "FOUND:"
+          echo "$NFT_KO"
+
+          echo
+          echo "FILE:"
+          file "$NFT_KO"
+
+          echo
+          echo "MODINFO:"
+          modinfo "$NFT_KO" 2>/dev/null || true
+
       - name: Collect result
         run: |
           set -e
@@ -351,68 +198,35 @@ jobs:
           rm -rf result
           mkdir -p result
 
-          echo "=== APK ==="
-
-          find wrt/bin wrt/packages wrt \
-            -type f \
-            \( \
-              -iname '*nft*compat*.apk' \
-              -o \
-              -iname '*nft*compat*.ipk' \
-            \) \
-            -exec cp -v {} result/ \; \
-            2>/dev/null || true
-
-          echo
-          echo "=== KO ==="
+          echo "=========================================="
+          echo "COLLECT nft_compat.ko"
+          echo "=========================================="
 
           find wrt \
             -type f \
             -name 'nft_compat.ko' \
-            -exec cp -v {} result/ \; \
-            2>/dev/null || true
-
-          echo
-          echo "=== BUILD INFO ==="
-
-          echo "3c810bd" > result/SOURCE_COMMIT.txt
-          echo "6.12.106" > result/KERNEL_VERSION.txt
-          echo "qualcommax/ipq60xx/jdcloud_re-cs-02" > result/TARGET.txt
+            -exec cp -v {} result/ \;
 
           echo
           echo "=========================================="
-          echo "FINAL RESULT"
+          echo "RESULT"
           echo "=========================================="
 
           ls -lah result
 
-          echo
-          echo "Checking required files..."
-
-          if ! find result \
-            -type f \
-            \( \
-              -iname '*nft*compat*.apk' \
-              -o \
-              -name 'nft_compat.ko' \
-            \) | grep -q .; then
-
-            echo "ERROR: nft-compat was NOT produced."
+          if [ ! -f result/nft_compat.ko ]; then
+            echo
+            echo "ERROR: nft_compat.ko not found."
             exit 1
           fi
 
           echo
-          echo "=========================================="
-          echo "SUCCESS"
-          echo "=========================================="
+          echo "SUCCESS:"
+          file result/nft_compat.ko
 
-      # ==========================================================
-      # 上传 Artifact
-      # ==========================================================
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nft-compat-ipq60xx-kernel-6.12.106
+          name: nft-compat-6.12.106
           path: result/
           if-no-files-found: error
-          retention-days: 30
