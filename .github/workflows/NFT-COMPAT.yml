@@ -4,19 +4,26 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout CI
+      # ============================================================
+      # 1. Checkout
+      # ============================================================
+      - name: Checkout
         uses: actions/checkout@v4
 
+      # ============================================================
+      # 2. Build environment
+      # ============================================================
       - name: Init build environment
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             build-essential \
             clang \
@@ -44,8 +51,12 @@ jobs:
             patch \
             perl \
             tar \
-            xz-utils
+            xz-utils \
+            bc
 
+      # ============================================================
+      # 3. Clone ImmortalWrt
+      # ============================================================
       - name: Clone ImmortalWrt
         run: |
           git clone --depth=1 \
@@ -54,10 +65,16 @@ jobs:
 
           cd wrt
 
-          echo "=== SOURCE ==="
+          echo "========================================"
+          echo " ImmortalWrt SOURCE"
+          echo "========================================"
+
           git rev-parse HEAD
           git log -1 --oneline
 
+      # ============================================================
+      # 4. Configure exact target
+      # ============================================================
       - name: Configure target
         run: |
           cd wrt
@@ -66,66 +83,217 @@ jobs:
           CONFIG_TARGET_qualcommax=y
           CONFIG_TARGET_qualcommax_ipq60xx=y
           CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02=y
+
           CONFIG_PACKAGE_kmod-nft-compat=m
           EOF
+
+          echo "========================================"
+          echo " Updating feeds"
+          echo "========================================"
 
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+          echo "========================================"
+          echo " Running defconfig"
+          echo "========================================"
+
           make defconfig
 
           echo
-          echo "=== KERNEL VERSION ==="
+          echo "========================================"
+          echo " TARGET"
+          echo "========================================"
+
+          grep '^CONFIG_TARGET_' .config | grep -E \
+            'qualcommax|ipq60xx|jdcloud' || true
+
+          echo
+          echo "========================================"
+          echo " KERNEL CONFIG"
+          echo "========================================"
+
           grep '^CONFIG_LINUX_' .config || true
 
           echo
-          echo "=== NFT COMPAT ==="
-          grep 'NFT_COMPAT' .config || true
+          echo "========================================"
+          echo " NFT CONFIG"
+          echo "========================================"
 
-      - name: Build nft-compat
+          grep -E \
+            'NFT_COMPAT|NETFILTER_XTABLES|NF_TABLES|IP_NF_IPTABLES' \
+            .config || true
+
+      # ============================================================
+      # 5. Prepare kernel configuration
+      # ============================================================
+      - name: Prepare kernel
         run: |
           cd wrt
 
-          make package/kernel/linux/compile \
-            V=s \
-            -j2
+          echo "========================================"
+          echo " Preparing kernel"
+          echo "========================================"
 
-      - name: Find package
+          make target/linux/prepare V=s
+
+      # ============================================================
+      # 6. Build kernel modules
+      # ============================================================
+      - name: Build kernel
         run: |
           cd wrt
 
-          echo "=== SEARCH APK ==="
-          find bin packages build_dir -type f \
-            \( -name '*nft-compat*.apk' -o -name 'nft_compat.ko' \) \
+          echo "========================================"
+          echo " Building Linux kernel/modules"
+          echo "========================================"
+
+          make target/linux/compile V=s -j2
+
+      # ============================================================
+      # 7. Build nft-compat package specifically
+      # ============================================================
+      - name: Build nft-compat package
+        run: |
+          cd wrt
+
+          echo "========================================"
+          echo " Building kmod-nft-compat"
+          echo "========================================"
+
+          make package/kernel/linux/compile V=s -j2
+
+          echo
+          echo "========================================"
+          echo " Package search"
+          echo "========================================"
+
+          find bin packages build_dir staging_dir \
+            -type f \
+            \( \
+              -name '*nft-compat*.apk' \
+              -o \
+              -name '*nft-compat*.ipk' \
+              -o \
+              -name 'nft_compat.ko' \
+            \) \
+            -print 2>/dev/null || true
+
+      # ============================================================
+      # 8. Verify nft_compat.ko
+      # ============================================================
+      - name: Verify kernel module
+        run: |
+          cd wrt
+
+          echo "========================================"
+          echo " Searching nft_compat.ko"
+          echo "========================================"
+
+          find . \
+            -type f \
+            -name 'nft_compat.ko' \
+            -print \
             2>/dev/null || true
 
           echo
-          echo "=== KERNEL MODULE ==="
-          find . -type f \
-            -name 'nft_compat.ko' \
-            2>/dev/null || true
+          echo "========================================"
+          echo " Module information"
+          echo "========================================"
 
+          for f in $(find . -type f -name 'nft_compat.ko' 2>/dev/null); do
+            echo
+            echo "FILE: $f"
+            file "$f"
+            modinfo "$f" 2>/dev/null || true
+          done
+
+      # ============================================================
+      # 9. Collect final files
+      # ============================================================
       - name: Collect result
         run: |
+          rm -rf result
           mkdir -p result
 
-          find wrt/bin -type f \
-            -name '*nft-compat*.apk' \
+          echo "========================================"
+          echo " Collecting APK"
+          echo "========================================"
+
+          find wrt/bin wrt/packages wrt \
+            -type f \
+            \( \
+              -name '*nft-compat*.apk' \
+              -o \
+              -name '*nft-compat*.ipk' \
+            \) \
             -exec cp -v {} result/ \; \
             2>/dev/null || true
 
-          find wrt -type f \
+          echo
+          echo "========================================"
+          echo " Collecting KO"
+          echo "========================================"
+
+          find wrt \
+            -type f \
             -name 'nft_compat.ko' \
             -exec cp -v {} result/ \; \
             2>/dev/null || true
 
           echo
-          echo "=== RESULT ==="
+          echo "========================================"
+          echo " Build information"
+          echo "========================================"
+
+          cd wrt
+
+          git rev-parse HEAD > ../result/IMMORTALWRT_COMMIT.txt
+
+          grep '^CONFIG_TARGET_' .config | \
+            grep -E 'qualcommax|ipq60xx|jdcloud' \
+            > ../result/TARGET.txt || true
+
+          grep '^CONFIG_LINUX_' .config \
+            > ../result/KERNEL_CONFIG.txt || true
+
+          echo
+          echo "========================================"
+          echo " FINAL RESULT"
+          echo "========================================"
+
+          cd ..
+
           ls -lah result
 
+          echo
+          echo "========================================"
+          echo " Checking required output"
+          echo "========================================"
+
+          if ! find result \
+            -type f \
+            \( \
+              -name '*nft-compat*.apk' \
+              -o \
+              -name '*nft-compat*.ipk' \
+              -o \
+              -name 'nft_compat.ko' \
+            \) | grep -q .; then
+
+            echo "ERROR: nft-compat package/module was NOT produced."
+            exit 1
+          fi
+
+          echo "SUCCESS: nft-compat output found."
+
+      # ============================================================
+      # 10. Upload Artifact
+      # ============================================================
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nft-compat
+          name: nft-compat-ipq60xx-jdcloud
           path: result/
           if-no-files-found: error
+          retention-days: 30
