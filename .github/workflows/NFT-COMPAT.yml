@@ -1,4 +1,4 @@
-name: Build NFT Compat
+name: Build NFT Compat 6.12.106
 
 on:
   workflow_dispatch:
@@ -12,42 +12,33 @@ jobs:
 
     steps:
 
-      # ============================================================
-      # 1. Checkout
-      # ============================================================
-      - name: Checkout
+      - name: Checkout CI
         uses: actions/checkout@v4
 
-      # ============================================================
-      # 2. Free GitHub Runner disk space
-      # ============================================================
+      # ==========================================================
+      # 清理 Runner 空间
+      # ==========================================================
       - name: Free disk space
         run: |
-          echo "=== BEFORE CLEANUP ==="
+          echo "=== DISK BEFORE ==="
           df -h /
-
-          echo
-          echo "=== CLEANING LARGE PREINSTALLED SDKs ==="
 
           sudo rm -rf /usr/local/lib/android 2>/dev/null || true
           sudo rm -rf /usr/share/dotnet 2>/dev/null || true
           sudo rm -rf /opt/ghc 2>/dev/null || true
           sudo rm -rf /usr/local/share/powershell 2>/dev/null || true
-          sudo rm -rf /usr/local/lib/node_modules 2>/dev/null || true
           sudo rm -rf /opt/hostedtoolcache 2>/dev/null || true
 
           sudo docker system prune -af 2>/dev/null || true
-
           sudo apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
 
           echo
-          echo "=== AFTER CLEANUP ==="
+          echo "=== DISK AFTER ==="
           df -h /
 
-      # ============================================================
-      # 3. Build environment
-      # ============================================================
+      # ==========================================================
+      # 编译环境
+      # ==========================================================
       - name: Init build environment
         run: |
           sudo apt-get update
@@ -79,40 +70,43 @@ jobs:
             perl \
             tar \
             xz-utils \
-            bc
+            bc \
+            ccache
 
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
 
           echo
-          echo "=== DISK AFTER TOOLCHAIN ==="
+          echo "=== BUILD ENV READY ==="
           df -h /
 
-      # ============================================================
-      # 4. Clone ImmortalWrt
-      # ============================================================
-      - name: Clone ImmortalWrt
+      # ==========================================================
+      # 拉取与你当前固件完全对应的源码
+      # ==========================================================
+      - name: Clone exact ImmortalWrt source
         run: |
-          git clone --depth=1 \
+          git clone \
             https://github.com/VIKINGYFY/immortalwrt.git \
             wrt
 
           cd wrt
 
-          echo "========================================"
-          echo " IMMORTALWRT SOURCE"
-          echo "========================================"
+          git checkout 3c810bd
+
+          echo "=========================================="
+          echo "SOURCE COMMIT"
+          echo "=========================================="
 
           git rev-parse HEAD
           git log -1 --oneline
 
           echo
-          echo "=== DISK ==="
-          df -h /
+          echo "Expected:"
+          echo "3c810bd kernel: bump 6.12 to 6.12.106"
 
-      # ============================================================
-      # 5. Configure exact target
-      # ============================================================
+      # ==========================================================
+      # 配置目标
+      # ==========================================================
       - name: Configure target
         run: |
           cd wrt
@@ -121,139 +115,210 @@ jobs:
           CONFIG_TARGET_qualcommax=y
           CONFIG_TARGET_qualcommax_ipq60xx=y
           CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02=y
+
           CONFIG_PACKAGE_kmod-nft-compat=m
           EOF
+
+          echo "=========================================="
+          echo "UPDATE FEEDS"
+          echo "=========================================="
 
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+          echo
+          echo "=========================================="
+          echo "DEFCONFIG"
+          echo "=========================================="
+
           make defconfig
 
           echo
-          echo "========================================"
-          echo " TARGET"
-          echo "========================================"
+          echo "=========================================="
+          echo "TARGET"
+          echo "=========================================="
 
           grep '^CONFIG_TARGET_' .config | \
             grep -E 'qualcommax|ipq60xx|jdcloud' || true
 
           echo
-          echo "========================================"
-          echo " KERNEL"
-          echo "========================================"
+          echo "=========================================="
+          echo "KERNEL"
+          echo "=========================================="
 
           grep '^CONFIG_LINUX_' .config || true
 
           echo
-          echo "========================================"
-          echo " NFT COMPAT"
-          echo "========================================"
+          echo "=========================================="
+          echo "NFT"
+          echo "=========================================="
 
           grep -E \
-            'NFT_COMPAT|NETFILTER_XTABLES|NF_TABLES|IP_NF_IPTABLES' \
+            'NFT_COMPAT|NF_TABLES_COMPAT|NETFILTER_XTABLES|NF_TABLES' \
             .config || true
 
-          echo
-          echo "=== DISK ==="
-          df -h /
-
-      # ============================================================
-      # 6. Prepare kernel
-      # ============================================================
-      - name: Prepare kernel
+      # ==========================================================
+      # 先编译 HOST TOOLS
+      # 解决 flex / m4 问题
+      # ==========================================================
+      - name: Build host tools
         run: |
           cd wrt
+
+          echo "=========================================="
+          echo "BUILD HOST TOOLS"
+          echo "=========================================="
+
+          make tools/install V=s -j2
+
+          echo
+          echo "Checking host tools..."
+
+          test -x staging_dir/host/bin/m4
+          test -x staging_dir/host/bin/flex
+
+          echo "m4:"
+          staging_dir/host/bin/m4 --version | head -1
+
+          echo "flex:"
+          staging_dir/host/bin/flex --version | head -1
+
+      # ==========================================================
+      # 编译完整 OpenWrt 工具链
+      # 解决 aarch64-openwrt-linux-musl-gcc 不存在
+      # ==========================================================
+      - name: Build toolchain
+        run: |
+          cd wrt
+
+          echo "=========================================="
+          echo "BUILD TOOLCHAIN"
+          echo "=========================================="
+
+          make toolchain/install V=s -j2
+
+          echo
+          echo "Checking cross compiler..."
+
+          test -x staging_dir/toolchain-aarch64_cortex-a53_gcc-*/bin/aarch64-openwrt-linux-musl-gcc
+
+          find staging_dir \
+            -type f \
+            -name 'aarch64-openwrt-linux-musl-gcc' \
+            -print
+
+      # ==========================================================
+      # 准备内核
+      # ==========================================================
+      - name: Prepare Linux 6.12.106
+        run: |
+          cd wrt
+
+          echo "=========================================="
+          echo "PREPARE KERNEL"
+          echo "=========================================="
 
           make target/linux/prepare V=s
 
           echo
-          echo "=== DISK AFTER PREPARE ==="
-          df -h /
+          echo "Kernel source:"
+          find build_dir/target-* \
+            -maxdepth 3 \
+            -type d \
+            -name 'linux-6.12.*' \
+            -print
 
-      # ============================================================
-      # 7. Build kernel
-      # ============================================================
-      - name: Build kernel
+      # ==========================================================
+      # 编译 Linux 6.12.106
+      # ==========================================================
+      - name: Build Linux 6.12.106
         run: |
           cd wrt
 
-          echo "========================================"
-          echo " BUILD KERNEL / MODULES"
-          echo "========================================"
+          echo "=========================================="
+          echo "BUILD LINUX 6.12.106"
+          echo "=========================================="
 
-          echo "Disk before compile:"
           df -h /
-
-          echo
-          echo "Inodes:"
           df -ih /
 
           make target/linux/compile V=s -j2
 
           echo
-          echo "Disk after compile:"
-          df -h /
+          echo "=========================================="
+          echo "KERNEL BUILD COMPLETE"
+          echo "=========================================="
 
-      # ============================================================
-      # 8. Build nft-compat package
-      # ============================================================
+          find build_dir \
+            -type f \
+            -name 'nft_compat.ko' \
+            -print 2>/dev/null || true
+
+      # ==========================================================
+      # 专门构建 kmod-nft-compat
+      # ==========================================================
       - name: Build nft-compat package
         run: |
           cd wrt
 
-          echo "========================================"
-          echo " BUILD NFT COMPAT PACKAGE"
-          echo "========================================"
+          echo "=========================================="
+          echo "BUILD KMOD-NFT-COMPAT"
+          echo "=========================================="
 
           make package/kernel/linux/compile V=s -j2
 
-      # ============================================================
-      # 9. Find output
-      # ============================================================
-      - name: Find result
+      # ==========================================================
+      # 查找结果
+      # ==========================================================
+      - name: Verify nft compat
         run: |
           cd wrt
 
-          echo "========================================"
-          echo " SEARCH APK"
-          echo "========================================"
+          echo "=========================================="
+          echo "SEARCH APK"
+          echo "=========================================="
 
-          find bin packages build_dir staging_dir \
+          find bin packages \
             -type f \
             \( \
-              -name '*nft-compat*.apk' \
+              -iname '*nft*compat*.apk' \
               -o \
-              -name '*nft-compat*.ipk' \
+              -iname '*nft*compat*.ipk' \
             \) \
             -print 2>/dev/null || true
 
           echo
-          echo "========================================"
-          echo " SEARCH KO"
-          echo "========================================"
+          echo "=========================================="
+          echo "SEARCH KO"
+          echo "=========================================="
 
           find . \
             -type f \
             -name 'nft_compat.ko' \
             -print 2>/dev/null || true
 
-      # ============================================================
-      # 10. Collect
-      # ============================================================
+      # ==========================================================
+      # 收集文件
+      # ==========================================================
       - name: Collect result
         run: |
           rm -rf result
           mkdir -p result
 
+          echo "=== APK ==="
+
           find wrt/bin wrt/packages wrt \
             -type f \
             \( \
-              -name '*nft-compat*.apk' \
+              -iname '*nft*compat*.apk' \
               -o \
-              -name '*nft-compat*.ipk' \
+              -iname '*nft*compat*.ipk' \
             \) \
             -exec cp -v {} result/ \; \
             2>/dev/null || true
+
+          echo
+          echo "=== KO ==="
 
           find wrt \
             -type f \
@@ -261,52 +326,50 @@ jobs:
             -exec cp -v {} result/ \; \
             2>/dev/null || true
 
-          cd wrt
+          echo
+          echo "=== BUILD INFO ==="
 
-          git rev-parse HEAD > ../result/IMMORTALWRT_COMMIT.txt
+          echo "3c810bd" > result/SOURCE_COMMIT.txt
 
-          grep '^CONFIG_TARGET_' .config | \
-            grep -E 'qualcommax|ipq60xx|jdcloud' \
-            > ../result/TARGET.txt || true
+          echo "6.12.106" > result/KERNEL_VERSION.txt
 
-          grep '^CONFIG_LINUX_' .config \
-            > ../result/KERNEL_CONFIG.txt || true
-
-          cd ..
+          echo "qualcommax/ipq60xx/jdcloud_re-cs-02" \
+            > result/TARGET.txt
 
           echo
-          echo "========================================"
-          echo " FINAL RESULT"
-          echo "========================================"
+          echo "=========================================="
+          echo "FINAL RESULT"
+          echo "=========================================="
 
           ls -lah result
 
           echo
-          echo "=== REQUIRED OUTPUT CHECK ==="
+          echo "Checking required files..."
 
           if ! find result \
             -type f \
             \( \
-              -name '*nft-compat*.apk' \
-              -o \
-              -name '*nft-compat*.ipk' \
+              -iname '*nft*compat*.apk' \
               -o \
               -name 'nft_compat.ko' \
             \) | grep -q .; then
 
-            echo "ERROR: nft-compat output NOT FOUND"
+            echo "ERROR: nft-compat was NOT produced."
             exit 1
           fi
 
-          echo "SUCCESS: nft-compat output found."
+          echo
+          echo "=========================================="
+          echo "SUCCESS"
+          echo "=========================================="
 
-      # ============================================================
-      # 11. Upload
-      # ============================================================
+      # ==========================================================
+      # 上传 Artifact
+      # ==========================================================
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nft-compat-ipq60xx-jdcloud
+          name: nft-compat-ipq60xx-kernel-6.12.106
           path: result/
           if-no-files-found: error
           retention-days: 30
