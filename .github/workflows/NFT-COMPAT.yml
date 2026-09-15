@@ -36,7 +36,6 @@ jobs:
             python3 \
             python3-pip \
             python3-setuptools \
-            python3-distutils \
             libncurses-dev \
             libssl-dev \
             zlib1g-dev \
@@ -71,6 +70,7 @@ jobs:
           echo "=========================================="
           echo "SOURCE VERSION"
           echo "=========================================="
+
           git rev-parse HEAD
           git log -1 --oneline
 
@@ -83,7 +83,6 @@ jobs:
           CONFIG_TARGET_qualcommax=y
           CONFIG_TARGET_qualcommax_ipq60xx=y
           CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02=y
-
           CONFIG_PACKAGE_kmod-nft-compat=m
           EOF
 
