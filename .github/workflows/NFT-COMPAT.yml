@@ -81,18 +81,49 @@ jobs:
           df -h /
 
       # ==========================================================
-      # 拉取与你当前固件完全对应的源码
+      # 精确拉取 3c810bd
+      # 对应 Linux 6.12.106
       # ==========================================================
       - name: Clone exact ImmortalWrt source
         run: |
+          set -e
+
+          echo "=========================================="
+          echo "CLONE IMMORTALWRT"
+          echo "=========================================="
+
           git clone \
             https://github.com/VIKINGYFY/immortalwrt.git \
             wrt
 
           cd wrt
 
-          git checkout 3c810bd
+          echo
+          echo "=========================================="
+          echo "RESOLVE COMMIT 3c810bd"
+          echo "=========================================="
 
+          FULL_SHA="$(curl -fsSL \
+            https://api.github.com/repos/VIKINGYFY/immortalwrt/commits/3c810bd \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["sha"])')"
+
+          echo "FULL SHA: $FULL_SHA"
+
+          if [ -z "$FULL_SHA" ]; then
+            echo "ERROR: Cannot resolve commit 3c810bd"
+            exit 1
+          fi
+
+          echo
+          echo "=========================================="
+          echo "FETCH EXACT COMMIT"
+          echo "=========================================="
+
+          git fetch --no-tags origin "$FULL_SHA"
+
+          git checkout --detach "$FULL_SHA"
+
+          echo
           echo "=========================================="
           echo "SOURCE COMMIT"
           echo "=========================================="
@@ -101,8 +132,15 @@ jobs:
           git log -1 --oneline
 
           echo
-          echo "Expected:"
-          echo "3c810bd kernel: bump 6.12 to 6.12.106"
+          echo "=========================================="
+          echo "CHECK KERNEL VERSION"
+          echo "=========================================="
+
+          grep -R \
+            "6.12.106" \
+            include/kernel-version.mk \
+            target/linux \
+            2>/dev/null | head -20 || true
 
       # ==========================================================
       # 配置目标
@@ -158,8 +196,7 @@ jobs:
             .config || true
 
       # ==========================================================
-      # 先编译 HOST TOOLS
-      # 解决 flex / m4 问题
+      # 编译 HOST TOOLS
       # ==========================================================
       - name: Build host tools
         run: |
@@ -184,8 +221,7 @@ jobs:
           staging_dir/host/bin/flex --version | head -1
 
       # ==========================================================
-      # 编译完整 OpenWrt 工具链
-      # 解决 aarch64-openwrt-linux-musl-gcc 不存在
+      # 编译工具链
       # ==========================================================
       - name: Build toolchain
         run: |
@@ -200,12 +236,20 @@ jobs:
           echo
           echo "Checking cross compiler..."
 
-          test -x staging_dir/toolchain-aarch64_cortex-a53_gcc-*/bin/aarch64-openwrt-linux-musl-gcc
-
-          find staging_dir \
+          GCC="$(find staging_dir/toolchain-* \
             -type f \
             -name 'aarch64-openwrt-linux-musl-gcc' \
-            -print
+            -print -quit)"
+
+          if [ -z "$GCC" ]; then
+            echo "ERROR: aarch64-openwrt-linux-musl-gcc NOT FOUND"
+            exit 1
+          fi
+
+          echo "GCC:"
+          echo "$GCC"
+
+          "$GCC" --version | head -1
 
       # ==========================================================
       # 准备内核
@@ -255,7 +299,7 @@ jobs:
             -print 2>/dev/null || true
 
       # ==========================================================
-      # 专门构建 kmod-nft-compat
+      # 构建 kmod-nft-compat
       # ==========================================================
       - name: Build nft-compat package
         run: |
@@ -302,6 +346,8 @@ jobs:
       # ==========================================================
       - name: Collect result
         run: |
+          set -e
+
           rm -rf result
           mkdir -p result
 
@@ -330,11 +376,8 @@ jobs:
           echo "=== BUILD INFO ==="
 
           echo "3c810bd" > result/SOURCE_COMMIT.txt
-
           echo "6.12.106" > result/KERNEL_VERSION.txt
-
-          echo "qualcommax/ipq60xx/jdcloud_re-cs-02" \
-            > result/TARGET.txt
+          echo "qualcommax/ipq60xx/jdcloud_re-cs-02" > result/TARGET.txt
 
           echo
           echo "=========================================="
