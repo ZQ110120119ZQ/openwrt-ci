@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+
       # ============================================================
       # 1. Checkout
       # ============================================================
@@ -18,7 +19,34 @@ jobs:
         uses: actions/checkout@v4
 
       # ============================================================
-      # 2. Build environment
+      # 2. Free GitHub Runner disk space
+      # ============================================================
+      - name: Free disk space
+        run: |
+          echo "=== BEFORE CLEANUP ==="
+          df -h /
+
+          echo
+          echo "=== CLEANING LARGE PREINSTALLED SDKs ==="
+
+          sudo rm -rf /usr/local/lib/android 2>/dev/null || true
+          sudo rm -rf /usr/share/dotnet 2>/dev/null || true
+          sudo rm -rf /opt/ghc 2>/dev/null || true
+          sudo rm -rf /usr/local/share/powershell 2>/dev/null || true
+          sudo rm -rf /usr/local/lib/node_modules 2>/dev/null || true
+          sudo rm -rf /opt/hostedtoolcache 2>/dev/null || true
+
+          sudo docker system prune -af 2>/dev/null || true
+
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+          echo
+          echo "=== AFTER CLEANUP ==="
+          df -h /
+
+      # ============================================================
+      # 3. Build environment
       # ============================================================
       - name: Init build environment
         run: |
@@ -42,7 +70,6 @@ jobs:
             wget \
             curl \
             git \
-            ccache \
             python3 \
             python3-pip \
             python3-ply \
@@ -54,8 +81,15 @@ jobs:
             xz-utils \
             bc
 
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+          echo
+          echo "=== DISK AFTER TOOLCHAIN ==="
+          df -h /
+
       # ============================================================
-      # 3. Clone ImmortalWrt
+      # 4. Clone ImmortalWrt
       # ============================================================
       - name: Clone ImmortalWrt
         run: |
@@ -66,14 +100,18 @@ jobs:
           cd wrt
 
           echo "========================================"
-          echo " ImmortalWrt SOURCE"
+          echo " IMMORTALWRT SOURCE"
           echo "========================================"
 
           git rev-parse HEAD
           git log -1 --oneline
 
+          echo
+          echo "=== DISK ==="
+          df -h /
+
       # ============================================================
-      # 4. Configure exact target
+      # 5. Configure exact target
       # ============================================================
       - name: Configure target
         run: |
@@ -83,20 +121,11 @@ jobs:
           CONFIG_TARGET_qualcommax=y
           CONFIG_TARGET_qualcommax_ipq60xx=y
           CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02=y
-
           CONFIG_PACKAGE_kmod-nft-compat=m
           EOF
 
-          echo "========================================"
-          echo " Updating feeds"
-          echo "========================================"
-
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
-          echo "========================================"
-          echo " Running defconfig"
-          echo "========================================"
 
           make defconfig
 
@@ -105,67 +134,88 @@ jobs:
           echo " TARGET"
           echo "========================================"
 
-          grep '^CONFIG_TARGET_' .config | grep -E \
-            'qualcommax|ipq60xx|jdcloud' || true
+          grep '^CONFIG_TARGET_' .config | \
+            grep -E 'qualcommax|ipq60xx|jdcloud' || true
 
           echo
           echo "========================================"
-          echo " KERNEL CONFIG"
+          echo " KERNEL"
           echo "========================================"
 
           grep '^CONFIG_LINUX_' .config || true
 
           echo
           echo "========================================"
-          echo " NFT CONFIG"
+          echo " NFT COMPAT"
           echo "========================================"
 
           grep -E \
             'NFT_COMPAT|NETFILTER_XTABLES|NF_TABLES|IP_NF_IPTABLES' \
             .config || true
 
+          echo
+          echo "=== DISK ==="
+          df -h /
+
       # ============================================================
-      # 5. Prepare kernel configuration
+      # 6. Prepare kernel
       # ============================================================
       - name: Prepare kernel
         run: |
           cd wrt
 
-          echo "========================================"
-          echo " Preparing kernel"
-          echo "========================================"
-
           make target/linux/prepare V=s
 
+          echo
+          echo "=== DISK AFTER PREPARE ==="
+          df -h /
+
       # ============================================================
-      # 6. Build kernel modules
+      # 7. Build kernel
       # ============================================================
       - name: Build kernel
         run: |
           cd wrt
 
           echo "========================================"
-          echo " Building Linux kernel/modules"
+          echo " BUILD KERNEL / MODULES"
           echo "========================================"
+
+          echo "Disk before compile:"
+          df -h /
+
+          echo
+          echo "Inodes:"
+          df -ih /
 
           make target/linux/compile V=s -j2
 
+          echo
+          echo "Disk after compile:"
+          df -h /
+
       # ============================================================
-      # 7. Build nft-compat package specifically
+      # 8. Build nft-compat package
       # ============================================================
       - name: Build nft-compat package
         run: |
           cd wrt
 
           echo "========================================"
-          echo " Building kmod-nft-compat"
+          echo " BUILD NFT COMPAT PACKAGE"
           echo "========================================"
 
           make package/kernel/linux/compile V=s -j2
 
-          echo
+      # ============================================================
+      # 9. Find output
+      # ============================================================
+      - name: Find result
+        run: |
+          cd wrt
+
           echo "========================================"
-          echo " Package search"
+          echo " SEARCH APK"
           echo "========================================"
 
           find bin packages build_dir staging_dir \
@@ -174,51 +224,26 @@ jobs:
               -name '*nft-compat*.apk' \
               -o \
               -name '*nft-compat*.ipk' \
-              -o \
-              -name 'nft_compat.ko' \
             \) \
             -print 2>/dev/null || true
 
-      # ============================================================
-      # 8. Verify nft_compat.ko
-      # ============================================================
-      - name: Verify kernel module
-        run: |
-          cd wrt
-
+          echo
           echo "========================================"
-          echo " Searching nft_compat.ko"
+          echo " SEARCH KO"
           echo "========================================"
 
           find . \
             -type f \
             -name 'nft_compat.ko' \
-            -print \
-            2>/dev/null || true
-
-          echo
-          echo "========================================"
-          echo " Module information"
-          echo "========================================"
-
-          for f in $(find . -type f -name 'nft_compat.ko' 2>/dev/null); do
-            echo
-            echo "FILE: $f"
-            file "$f"
-            modinfo "$f" 2>/dev/null || true
-          done
+            -print 2>/dev/null || true
 
       # ============================================================
-      # 9. Collect final files
+      # 10. Collect
       # ============================================================
       - name: Collect result
         run: |
           rm -rf result
           mkdir -p result
-
-          echo "========================================"
-          echo " Collecting APK"
-          echo "========================================"
 
           find wrt/bin wrt/packages wrt \
             -type f \
@@ -230,21 +255,11 @@ jobs:
             -exec cp -v {} result/ \; \
             2>/dev/null || true
 
-          echo
-          echo "========================================"
-          echo " Collecting KO"
-          echo "========================================"
-
           find wrt \
             -type f \
             -name 'nft_compat.ko' \
             -exec cp -v {} result/ \; \
             2>/dev/null || true
-
-          echo
-          echo "========================================"
-          echo " Build information"
-          echo "========================================"
 
           cd wrt
 
@@ -257,19 +272,17 @@ jobs:
           grep '^CONFIG_LINUX_' .config \
             > ../result/KERNEL_CONFIG.txt || true
 
+          cd ..
+
           echo
           echo "========================================"
           echo " FINAL RESULT"
           echo "========================================"
 
-          cd ..
-
           ls -lah result
 
           echo
-          echo "========================================"
-          echo " Checking required output"
-          echo "========================================"
+          echo "=== REQUIRED OUTPUT CHECK ==="
 
           if ! find result \
             -type f \
@@ -281,14 +294,14 @@ jobs:
               -name 'nft_compat.ko' \
             \) | grep -q .; then
 
-            echo "ERROR: nft-compat package/module was NOT produced."
+            echo "ERROR: nft-compat output NOT FOUND"
             exit 1
           fi
 
           echo "SUCCESS: nft-compat output found."
 
       # ============================================================
-      # 10. Upload Artifact
+      # 11. Upload
       # ============================================================
       - name: Upload artifact
         uses: actions/upload-artifact@v4
