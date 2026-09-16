@@ -1,128 +1,3 @@
-name: Build NFT Compat 6.12.106
-
-on:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-
-    steps:
-
-      - name: Free disk space
-        run: |
-          set -e
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo apt-get clean
-          df -h
-
-      - name: Install build dependencies
-        run: |
-          set -e
-
-          sudo apt-get update
-
-          sudo apt-get install -y \
-            build-essential \
-            clang \
-            flex \
-            bison \
-            gawk \
-            gettext \
-            git \
-            curl \
-            wget \
-            unzip \
-            rsync \
-            file \
-            python3 \
-            python3-pip \
-            python3-setuptools \
-            libncurses-dev \
-            libssl-dev \
-            zlib1g-dev \
-            libelf-dev \
-            device-tree-compiler \
-            swig \
-            time \
-            ccache \
-            xz-utils
-
-      - name: Clone exact ImmortalWrt source
-        run: |
-          set -e
-
-          git clone https://github.com/VIKINGYFY/immortalwrt.git wrt
-
-          cd wrt
-
-          FULL_SHA="$(curl -fsSL \
-            https://api.github.com/repos/VIKINGYFY/immortalwrt/commits/3c810bd \
-            | python3 -c 'import sys,json; print(json.load(sys.stdin)["sha"])')"
-
-          echo "=========================================="
-          echo "IMMORTALWRT COMMIT"
-          echo "=========================================="
-
-          echo "$FULL_SHA"
-
-          git fetch --no-tags origin "$FULL_SHA"
-          git checkout --detach "$FULL_SHA"
-
-          echo
-          git rev-parse HEAD
-          git log -1 --oneline
-
-      - name: Configure OpenWrt target
-        run: |
-          set -e
-
-          cd wrt
-
-          cat > .config <<'EOF'
-          CONFIG_TARGET_qualcommax=y
-          CONFIG_TARGET_qualcommax_ipq60xx=y
-          CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02=y
-          CONFIG_PACKAGE_kmod-nft-compat=m
-          EOF
-
-          make defconfig
-
-          echo
-          echo "=========================================="
-          echo "TARGET CONFIG"
-          echo "=========================================="
-
-          grep -E \
-            'CONFIG_TARGET_qualcommax|CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02|CONFIG_PACKAGE_kmod-nft-compat' \
-            .config || true
-
-      - name: Build host tools
-        run: |
-          set -e
-          cd wrt
-          make tools/install -j2 V=s
-
-      - name: Build toolchain
-        run: |
-          set -e
-          cd wrt
-          make toolchain/install -j2 V=s
-
-      - name: Prepare Linux 6.12.106
-        run: |
-          set -e
-
-          cd wrt
-
-          echo "=========================================="
-          echo "PREPARE LINUX"
-          echo "=========================================="
-
-          make target/linux/prepare V=s
-
       - name: Configure Linux 6.12.106
         run: |
           set -e
@@ -141,13 +16,6 @@ jobs:
 
           if [ -z "$KDIR" ]; then
             echo "ERROR: linux-6.12.106 directory not found"
-            echo
-            echo "Available Linux directories:"
-            find build_dir/target-* \
-              -maxdepth 4 \
-              -type d \
-              -name 'linux-*' \
-              -print || true
             exit 1
           fi
 
@@ -157,142 +25,57 @@ jobs:
 
           echo
           echo "=========================================="
-          echo "ENABLE NF_TABLES_COMPAT"
+          echo "CREATE KERNEL CONFIG"
           echo "=========================================="
 
-          if grep -q '^CONFIG_NF_TABLES_COMPAT=' .config; then
-            sed -i \
-              's/^CONFIG_NF_TABLES_COMPAT=.*/CONFIG_NF_TABLES_COMPAT=m/' \
-              .config
+          if [ -f .config ]; then
+            echo "Existing .config found"
           else
-            echo 'CONFIG_NF_TABLES_COMPAT=m' >> .config
+            echo "No .config yet"
           fi
 
           echo
-          echo "BEFORE OLDDEFCONFIG:"
-          grep '^CONFIG_NF_TABLES_COMPAT=' .config || true
+          echo "=========================================="
+          echo "FORCE REQUIRED NETFILTER OPTIONS"
+          echo "=========================================="
+
+          # nftables core
+          ./scripts/config --enable NF_TABLES
+
+          # Xtables / iptables compatibility
+          ./scripts/config --module NETFILTER_XTABLES
+          ./scripts/config --enable NETFILTER_XTABLES_COMPAT
+
+          # nftables xtables compatibility layer
+          ./scripts/config --module NF_TABLES_COMPAT
 
           echo
           echo "=========================================="
-          echo "OLDDEFCONFIG"
+          echo "RUN OLDDEFCONFIG"
           echo "=========================================="
 
           make olddefconfig
 
           echo
           echo "=========================================="
-          echo "FINAL KERNEL CONFIG"
+          echo "FINAL NETFILTER CONFIG"
           echo "=========================================="
 
-          grep '^CONFIG_NF_TABLES_COMPAT=' .config || true
-
-          if ! grep -q '^CONFIG_NF_TABLES_COMPAT=m$' .config; then
-            echo "ERROR: CONFIG_NF_TABLES_COMPAT is not m"
-            exit 1
-          fi
-
-      - name: Build Linux kernel modules
-        run: |
-          set -e
-
-          cd wrt
-
-          echo "=========================================="
-          echo "BUILD LINUX MODULES"
-          echo "=========================================="
-
-          make target/linux/compile V=s -j2
-
-      - name: Verify nft_compat module
-        run: |
-          set -e
-
-          cd wrt
+          grep -E \
+            '^CONFIG_(NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)=' \
+            .config || true
 
           echo
           echo "=========================================="
-          echo "SEARCH nft_compat.ko"
+          echo "VERIFY REQUIRED CONFIG"
           echo "=========================================="
 
-          find build_dir \
-            -type f \
-            -name 'nft_compat.ko' \
-            -print
-
-          NFT_KO="$(find build_dir \
-            -type f \
-            -name 'nft_compat.ko' \
-            -print \
-            -quit)"
-
-          if [ -z "$NFT_KO" ]; then
-            echo
-            echo "ERROR: nft_compat.ko not found"
-            echo
-            echo "Checking kernel config:"
-            grep '^CONFIG_NF_TABLES_COMPAT=' \
-              "$(find build_dir/target-* \
-                -maxdepth 4 \
-                -type f \
-                -path '*/linux-6.12.106/.config' \
-                -print -quit)" || true
-            exit 1
-          fi
+          grep -q '^CONFIG_NF_TABLES=y$' .config
+          grep -q '^CONFIG_NETFILTER_XTABLES=m$' .config
+          grep -q '^CONFIG_NETFILTER_XTABLES_COMPAT=y$' .config
+          grep -q '^CONFIG_NF_TABLES_COMPAT=m$' .config
 
           echo
           echo "=========================================="
-          echo "NFT COMPAT FOUND"
+          echo "CONFIGURATION OK"
           echo "=========================================="
-
-          echo "PATH:"
-          echo "$NFT_KO"
-
-          echo
-          echo "FILE:"
-          file "$NFT_KO"
-
-          echo
-          echo "MODINFO:"
-          modinfo "$NFT_KO" 2>/dev/null || true
-
-          echo
-          echo "VERMAGIC:"
-          modinfo -F vermagic "$NFT_KO" 2>/dev/null || true
-
-      - name: Collect result
-        run: |
-          set -e
-
-          rm -rf result
-          mkdir -p result
-
-          NFT_KO="$(find wrt/build_dir \
-            -type f \
-            -name 'nft_compat.ko' \
-            -print \
-            -quit)"
-
-          if [ -z "$NFT_KO" ]; then
-            echo "ERROR: nft_compat.ko not found"
-            exit 1
-          fi
-
-          cp -v "$NFT_KO" result/nft_compat.ko
-
-          echo
-          echo "=========================================="
-          echo "FINAL RESULT"
-          echo "=========================================="
-
-          ls -lh result/nft_compat.ko
-
-          file result/nft_compat.ko
-
-          test -s result/nft_compat.ko
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nft-compat-6.12.106
-          path: result/nft_compat.ko
-          if-no-files-found: error
