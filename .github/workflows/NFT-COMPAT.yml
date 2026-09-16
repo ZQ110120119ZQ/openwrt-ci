@@ -104,11 +104,13 @@ jobs:
           cd wrt
 
           cat > .config <<'EOF'
-CONFIG_TARGET_qualcommax=y
-CONFIG_TARGET_qualcommax_ipq60xx=y
-CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02=y
-CONFIG_PACKAGE_kmod-nft-compat=m
-EOF
+          CONFIG_TARGET_qualcommax=y
+          CONFIG_TARGET_qualcommax_ipq60xx=y
+          CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02=y
+
+          # 关键：让 OpenWrt 自己处理 nft_compat 的全部内核依赖
+          CONFIG_PACKAGE_kmod-nft-compat=m
+          EOF
 
           echo "=========================================="
           echo "OPENWRT DEFCONFIG"
@@ -116,7 +118,8 @@ EOF
 
           make defconfig
 
-          # 强制恢复 kmod-nft-compat=m（defconfig 有时会因为依赖把它翻成 =y）
+          # defconfig 有时会把 kmod-nft-compat 从 =m 翻成 =y（如果被其它包 select）
+          # 这里强制拉回 =m，再 defconfig 一次保证依赖解析正确
           sed -i 's/^CONFIG_PACKAGE_kmod-nft-compat=.*/CONFIG_PACKAGE_kmod-nft-compat=m/' .config
           make defconfig
 
@@ -144,10 +147,13 @@ EOF
       - name: Build host tools
         run: |
           set -e
+
           cd wrt
+
           echo "=========================================="
           echo "BUILD HOST TOOLS"
           echo "=========================================="
+
           make tools/install -j$(nproc) V=s
 
       # ==========================================
@@ -156,10 +162,13 @@ EOF
       - name: Build toolchain
         run: |
           set -e
+
           cd wrt
+
           echo "=========================================="
           echo "BUILD TOOLCHAIN"
           echo "=========================================="
+
           make toolchain/install -j$(nproc) V=s
 
       # ==========================================
@@ -183,7 +192,13 @@ EOF
 
           if [ -z "$TOOLCHAIN_DIR" ]; then
             echo "ERROR: installed toolchain not found"
-            find staging_dir -maxdepth 3 -type d -name 'toolchain-*' -print || true
+
+            find staging_dir \
+              -maxdepth 3 \
+              -type d \
+              -name 'toolchain-*' \
+              -print || true
+
             exit 1
           fi
 
@@ -192,7 +207,9 @@ EOF
 
           if [ ! -x "$TOOLCHAIN_DIR/bin/aarch64-openwrt-linux-musl-gcc" ]; then
             echo "ERROR: aarch64-openwrt-linux-musl-gcc not found"
+
             ls -lah "$TOOLCHAIN_DIR/bin" | head -100
+
             exit 1
           fi
 
@@ -223,7 +240,13 @@ EOF
 
           if [ -z "$KDIR" ]; then
             echo "ERROR: Linux 6.12.106 source directory not found"
-            find build_dir/target-* -maxdepth 5 -type d -name 'linux-*' -print || true
+
+            find build_dir/target-* \
+              -maxdepth 5 \
+              -type d \
+              -name 'linux-*' \
+              -print || true
+
             exit 1
           fi
 
@@ -233,6 +256,7 @@ EOF
           echo "=========================================="
           echo "KERNEL DIRECTORY"
           echo "=========================================="
+
           echo "$KDIR"
 
           echo
@@ -242,42 +266,30 @@ EOF
           test "$(make -C "$KDIR" kernelversion)" = "6.12.106"
 
       # ==========================================
-      # BUILD KERNEL + NFTC_COMPAT KMOD
+      # BUILD KERNEL
       #
-      # 重要：
-      # nft_compat.ko 属于 OpenWrt 的 kernel *package*
-      # (package/kernel/linux/modules/netfilter.mk)。
+      # nft_compat 是内核自带 (in-tree) 模块：
+      #   net/netfilter/nft_compat.ko
       #
-      # 因此必须分两步：
-      #   1) make target/linux/compile   -> 内核本体
-      #   2) make package/kernel/linux/compile
-      #      -> 编译 kmod-nft-compat 等外部内核模块，
-      #         并把 .ko 生成到内核源码树里
-      #         net/netfilter/nft_compat.ko
+      # 只要 kmod-nft-compat=m 被选中，
+      # OpenWrt 就会把 CONFIG_NFT_COMPAT=m 注入到 kernel .config，
+      # make target/linux/compile 编译内核时就会一并生成 nft_compat.ko。
       # ==========================================
-      - name: Build Linux kernel
+      - name: Build Linux kernel modules
         run: |
           set -e
 
           cd wrt
 
+          KDIR="$(cat /tmp/kdir)"
+
           echo "=========================================="
-          echo "BUILD LINUX KERNEL"
+          echo "BUILD LINUX KERNEL MODULES"
           echo "=========================================="
+
+          echo "KDIR=$KDIR"
 
           make target/linux/compile -j$(nproc) V=s
-
-      - name: Build kernel packages (nft_compat kmod)
-        run: |
-          set -e
-
-          cd wrt
-
-          echo "=========================================="
-          echo "BUILD KERNEL PACKAGES"
-          echo "=========================================="
-
-          make package/kernel/linux/compile -j$(nproc) V=s
 
       # ==========================================
       # VERIFY FINAL KERNEL CONFIG
@@ -310,10 +322,21 @@ EOF
           echo "VERIFY NFT_COMPAT CONFIG"
           echo "=========================================="
 
-          NFT_COMPAT_VALUE="$(sed -n 's/^CONFIG_NFT_COMPAT=//p' "$KDIR/.config")"
-          XTABLES_VALUE="$(sed -n 's/^CONFIG_NETFILTER_XTABLES=//p' "$KDIR/.config")"
-          NF_TABLES_VALUE="$(sed -n 's/^CONFIG_NF_TABLES=//p' "$KDIR/.config")"
-          NETFILTER_VALUE="$(sed -n 's/^CONFIG_NETFILTER=//p' "$KDIR/.config")"
+          NFT_COMPAT_VALUE="$(sed \
+            -n 's/^CONFIG_NFT_COMPAT=//p' \
+            "$KDIR/.config")"
+
+          XTABLES_VALUE="$(sed \
+            -n 's/^CONFIG_NETFILTER_XTABLES=//p' \
+            "$KDIR/.config")"
+
+          NF_TABLES_VALUE="$(sed \
+            -n 's/^CONFIG_NF_TABLES=//p' \
+            "$KDIR/.config")"
+
+          NETFILTER_VALUE="$(sed \
+            -n 's/^CONFIG_NETFILTER=//p' \
+            "$KDIR/.config")"
 
           echo "CONFIG_NETFILTER=${NETFILTER_VALUE:-NOT_SET}"
           echo "CONFIG_NF_TABLES=${NF_TABLES_VALUE:-NOT_SET}"
@@ -323,9 +346,13 @@ EOF
           if [ "$NFT_COMPAT_VALUE" != "m" ] && [ "$NFT_COMPAT_VALUE" != "y" ]; then
             echo
             echo "ERROR: CONFIG_NFT_COMPAT is not m/y"
+
             echo
             echo "FULL NFT RELATED CONFIG:"
-            grep -E 'NFT|NETFILTER_XTABLES|NF_TABLES' "$KDIR/.config" | head -200 || true
+            grep -E \
+              'NFT|NETFILTER_XTABLES|NF_TABLES' \
+              "$KDIR/.config" | head -200 || true
+
             exit 1
           fi
 
@@ -360,13 +387,25 @@ EOF
           echo "SEARCH NFT_COMPAT.KO"
           echo "=========================================="
 
-          NFT_KO="$(find build_dir -type f -name 'nft_compat.ko' -print -quit)"
+          NFT_KO="$(find build_dir \
+            -type f \
+            -name 'nft_compat.ko' \
+            -print -quit)"
 
           if [ -z "$NFT_KO" ]; then
             echo "ERROR: nft_compat.ko was not generated"
+
             echo
             echo "SEARCH ALL NFT MODULES:"
-            find build_dir -type f \( -name '*nft*.ko' -o -name '*xtables*.ko' \) -print | sort || true
+            find build_dir \
+              -type f \
+              \( \
+                -name '*nft*.ko' \
+                -o \
+                -name '*xtables*.ko' \
+              \) \
+              -print | sort || true
+
             exit 1
           fi
 
@@ -378,12 +417,14 @@ EOF
           echo "=========================================="
           echo "FILE"
           echo "=========================================="
+
           file "$NFT_KO"
 
           echo
           echo "=========================================="
           echo "MODINFO"
           echo "=========================================="
+
           modinfo "$NFT_KO" || true
 
           echo
@@ -392,6 +433,7 @@ EOF
           echo "=========================================="
 
           VERMAGIC="$(modinfo -F vermagic "$NFT_KO" || true)"
+
           echo "$VERMAGIC"
 
           case "$VERMAGIC" in
@@ -424,6 +466,7 @@ EOF
           echo "=========================================="
 
           mkdir -p result
+
           cp "$NFT_KO" result/nft_compat.ko
 
           echo
@@ -438,6 +481,7 @@ EOF
           echo "=========================================="
           echo "MODULE DEPENDENCIES"
           echo "=========================================="
+
           modinfo -F depends result/nft_compat.ko || true
 
       # ==========================================
