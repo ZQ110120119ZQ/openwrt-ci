@@ -105,6 +105,8 @@ jobs:
           CONFIG_TARGET_qualcommax=y
           CONFIG_TARGET_qualcommax_ipq60xx=y
           CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02=y
+
+          # 关键：让 OpenWrt 自己处理 nft_compat 的全部内核依赖
           CONFIG_PACKAGE_kmod-nft-compat=m
           EOF
 
@@ -122,6 +124,16 @@ jobs:
           grep -E \
             'CONFIG_TARGET_qualcommax|CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02|CONFIG_PACKAGE_kmod-nft-compat' \
             .config || true
+
+          echo
+          echo "=========================================="
+          echo "VERIFY PACKAGE SELECTION"
+          echo "=========================================="
+
+          grep -q '^CONFIG_PACKAGE_kmod-nft-compat=m$' .config
+
+          echo "SUCCESS:"
+          echo "CONFIG_PACKAGE_kmod-nft-compat=m"
 
       # ==========================================
       # HOST TOOLS
@@ -153,32 +165,30 @@ jobs:
 
           make toolchain/install -j2 V=s
 
-          echo
+      # ==========================================
+      # VERIFY TOOLCHAIN
+      # ==========================================
+      - name: Verify toolchain
+        run: |
+          set -e
+
+          cd wrt
+
           echo "=========================================="
-          echo "CHECK INSTALLED TOOLCHAIN"
+          echo "VERIFY INSTALLED TOOLCHAIN"
           echo "=========================================="
 
           TOOLCHAIN_DIR="$(find staging_dir \
-            -maxdepth 1 \
-            -mindepth 1 \
+            -maxdepth 2 \
             -type d \
             -name 'toolchain-*' \
             -print -quit)"
 
           if [ -z "$TOOLCHAIN_DIR" ]; then
-            echo "ERROR: installed toolchain was not created"
+            echo "ERROR: installed toolchain not found"
 
-            echo
-            echo "STAGING DIR:"
             find staging_dir \
-              -maxdepth 2 \
-              -type d \
-              -print | sort || true
-
-            echo
-            echo "TOOLCHAIN BUILD DIR:"
-            find build_dir \
-              -maxdepth 2 \
+              -maxdepth 3 \
               -type d \
               -name 'toolchain-*' \
               -print || true
@@ -189,45 +199,20 @@ jobs:
           echo "TOOLCHAIN:"
           echo "$TOOLCHAIN_DIR"
 
-          echo
-          echo "TOOLCHAIN BIN:"
-          ls -lah "$TOOLCHAIN_DIR/bin" | head -100
-
-          GCC="$(find "$TOOLCHAIN_DIR/bin" \
-            -maxdepth 1 \
-            -type f \
-            -o \
-            -type l \
-            | grep '/aarch64-openwrt-linux-musl-gcc$' \
-            | head -1 || true)"
-
-          if [ -z "$GCC" ]; then
+          if [ ! -x "$TOOLCHAIN_DIR/bin/aarch64-openwrt-linux-musl-gcc" ]; then
             echo "ERROR: aarch64-openwrt-linux-musl-gcc not found"
 
-            echo
-            echo "POSSIBLE AARCH64 GCC:"
-            find "$TOOLCHAIN_DIR/bin" \
-              -maxdepth 1 \
-              \( \
-                -name 'aarch64-openwrt-linux-musl-gcc*' \
-                -o \
-                -name '*openwrt*linux*musl*gcc*' \
-              \) \
-              -ls || true
+            ls -lah "$TOOLCHAIN_DIR/bin" | head -100
 
             exit 1
           fi
 
           echo
-          echo "=========================================="
-          echo "GCC FOUND"
-          echo "=========================================="
-
-          echo "$GCC"
-          "$GCC" --version
+          echo "GCC:"
+          "$TOOLCHAIN_DIR/bin/aarch64-openwrt-linux-musl-gcc" --version
 
       # ==========================================
-      # PREPARE LINUX 6.12.106
+      # PREPARE LINUX
       # ==========================================
       - name: Prepare Linux 6.12.106
         run: |
@@ -272,10 +257,25 @@ jobs:
           echo "KERNEL VERSION:"
           make -C "$KDIR" kernelversion
 
+          test "$(make -C "$KDIR" kernelversion)" = "6.12.106"
+
       # ==========================================
-      # GENERATE + CONFIGURE KERNEL
+      # BUILD KERNEL
+      #
+      # IMPORTANT:
+      # 不再执行 kernel_oldconfig
+      # 不再手工修改 Linux .config
+      #
+      # OpenWrt 会根据：
+      # CONFIG_PACKAGE_kmod-nft-compat=m
+      #
+      # 自动通过 package metadata 注入：
+      # CONFIG_NFT_COMPAT
+      # CONFIG_NETFILTER_XTABLES
+      # CONFIG_NF_TABLES
+      # 以及对应依赖。
       # ==========================================
-      - name: Generate and configure Linux kernel config
+      - name: Build Linux kernel modules
         run: |
           set -e
 
@@ -284,80 +284,95 @@ jobs:
           KDIR="$(cat /tmp/kdir)"
 
           echo "=========================================="
-          echo "GENERATE OPENWRT KERNEL CONFIG"
+          echo "BUILD LINUX KERNEL MODULES"
           echo "=========================================="
 
           echo "KDIR=$KDIR"
 
-          make kernel_oldconfig CONFIG_TARGET=subtarget V=s
-
-          echo
-          echo "=========================================="
-          echo "CHECK KERNEL CONFIG"
-          echo "=========================================="
-
-          if [ ! -s "$KDIR/.config" ]; then
-            echo "ERROR: kernel .config was not generated"
-
-            find "$KDIR" \
-              -maxdepth 2 \
-              -name '.config*' \
-              -ls || true
-
-            exit 1
-          fi
-
-          ls -lh "$KDIR/.config"
-
-          cd "$KDIR"
-
-          echo
-          echo "=========================================="
-          echo "CONFIGURE NFT_COMPAT"
-          echo "=========================================="
-
-          ./scripts/config --enable NF_TABLES
-          ./scripts/config --module NETFILTER_XTABLES
-          ./scripts/config --module NFT_COMPAT
-
-          make olddefconfig
-
-          echo
-          echo "=========================================="
-          echo "KERNEL NETFILTER CONFIG"
-          echo "=========================================="
-
-          grep -E \
-            '^CONFIG_(NF_TABLES|NETFILTER_XTABLES|NFT_COMPAT)=' \
-            .config || true
-
-          echo
-          echo "=========================================="
-          echo "HARD VERIFY"
-          echo "=========================================="
-
-          grep -q '^CONFIG_NFT_COMPAT=m$' .config
-          grep -q '^CONFIG_NETFILTER_XTABLES=m$'
-
-          echo
-          echo "SUCCESS:"
-          echo "CONFIG_NFT_COMPAT=m"
-          echo "CONFIG_NETFILTER_XTABLES=m"
+          make target/linux/compile -j2 V=s
 
       # ==========================================
-      # BUILD LINUX
+      # VERIFY FINAL KERNEL CONFIG
       # ==========================================
-      - name: Build Linux kernel modules
+      - name: Verify final kernel configuration
         run: |
           set -e
 
           cd wrt
 
+          KDIR="$(cat /tmp/kdir)"
+
           echo "=========================================="
-          echo "BUILD LINUX KERNEL MODULES"
+          echo "FINAL KERNEL CONFIG"
           echo "=========================================="
 
-          make target/linux/compile -j2 V=s
+          if [ ! -s "$KDIR/.config" ]; then
+            echo "ERROR: final kernel .config not found"
+            exit 1
+          fi
+
+          echo
+          echo "NETFILTER CONFIG:"
+          grep -E \
+            '^CONFIG_(NETFILTER|NETFILTER_ADVANCED|NF_TABLES|NETFILTER_XTABLES|NFT_COMPAT)=' \
+            "$KDIR/.config" || true
+
+          echo
+          echo "=========================================="
+          echo "VERIFY NFT_COMPAT CONFIG"
+          echo "=========================================="
+
+          NFT_COMPAT_VALUE="$(sed \
+            -n 's/^CONFIG_NFT_COMPAT=//p' \
+            "$KDIR/.config")"
+
+          XTABLES_VALUE="$(sed \
+            -n 's/^CONFIG_NETFILTER_XTABLES=//p' \
+            "$KDIR/.config")"
+
+          NF_TABLES_VALUE="$(sed \
+            -n 's/^CONFIG_NF_TABLES=//p' \
+            "$KDIR/.config")"
+
+          NETFILTER_VALUE="$(sed \
+            -n 's/^CONFIG_NETFILTER=//p' \
+            "$KDIR/.config")"
+
+          echo "CONFIG_NETFILTER=${NETFILTER_VALUE:-NOT_SET}"
+          echo "CONFIG_NF_TABLES=${NF_TABLES_VALUE:-NOT_SET}"
+          echo "CONFIG_NETFILTER_XTABLES=${XTABLES_VALUE:-NOT_SET}"
+          echo "CONFIG_NFT_COMPAT=${NFT_COMPAT_VALUE:-NOT_SET}"
+
+          if [ "$NFT_COMPAT_VALUE" != "m" ]; then
+            echo
+            echo "ERROR: CONFIG_NFT_COMPAT is not m"
+
+            echo
+            echo "FULL NFT RELATED CONFIG:"
+            grep -E \
+              'NFT|NETFILTER_XTABLES|NF_TABLES' \
+              "$KDIR/.config" | head -200 || true
+
+            exit 1
+          fi
+
+          if [ "$XTABLES_VALUE" != "m" ]; then
+            echo
+            echo "ERROR: CONFIG_NETFILTER_XTABLES is not m"
+            exit 1
+          fi
+
+          if [ -z "$NF_TABLES_VALUE" ]; then
+            echo
+            echo "ERROR: CONFIG_NF_TABLES is missing"
+            exit 1
+          fi
+
+          echo
+          echo "SUCCESS:"
+          echo "CONFIG_NFT_COMPAT=m"
+          echo "CONFIG_NETFILTER_XTABLES=m"
+          echo "CONFIG_NF_TABLES=$NF_TABLES_VALUE"
 
       # ==========================================
       # FIND NFT_COMPAT
@@ -381,8 +396,7 @@ jobs:
             echo "ERROR: nft_compat.ko was not generated"
 
             echo
-            echo "SEARCH ALL NETFILTER MODULES:"
-
+            echo "SEARCH ALL NFT MODULES:"
             find build_dir \
               -type f \
               \( \
@@ -392,18 +406,19 @@ jobs:
               \) \
               -print | sort || true
 
-            echo
-            echo "KERNEL CONFIG:"
-
-            grep -E \
-              '^CONFIG_(NF_TABLES|NETFILTER_XTABLES|NFT_COMPAT)=' \
-              "$(cat /tmp/kdir)/.config" || true
-
             exit 1
           fi
 
+          echo
           echo "NFT_COMPAT:"
           echo "$NFT_KO"
+
+          echo
+          echo "=========================================="
+          echo "FILE"
+          echo "=========================================="
+
+          file "$NFT_KO"
 
           echo
           echo "=========================================="
@@ -444,11 +459,11 @@ jobs:
 
           cd wrt
 
+          NFT_KO="$(cat /tmp/nft_ko)"
+
           echo "=========================================="
           echo "COLLECT NFT_COMPAT.KO"
           echo "=========================================="
-
-          NFT_KO="$(cat /tmp/nft_ko)"
 
           mkdir -p result
 
@@ -461,6 +476,13 @@ jobs:
           echo
           echo "SHA256:"
           sha256sum result/nft_compat.ko
+
+          echo
+          echo "=========================================="
+          echo "MODULE DEPENDENCIES"
+          echo "=========================================="
+
+          modinfo -F depends result/nft_compat.ko || true
 
       # ==========================================
       # UPLOAD
