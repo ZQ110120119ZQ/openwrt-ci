@@ -234,10 +234,10 @@ jobs:
 
 
       # ==========================================================
-      # GENERATE OPENWRT KERNEL CONFIG
+      # LOCATE KERNEL
       # ==========================================================
 
-      - name: Generate Linux kernel config
+      - name: Locate Linux kernel
         run: |
           set -e
 
@@ -251,7 +251,8 @@ jobs:
             -maxdepth 4 \
             -type d \
             -name 'linux-6.12.106' \
-            -print -quit)"
+            -print \
+            -quit)"
 
           if [ -z "$KDIR" ]; then
             echo "ERROR: linux-6.12.106 not found"
@@ -260,102 +261,78 @@ jobs:
 
           echo "KDIR=$KDIR"
 
-          echo
+          test -d "$KDIR"
+
+          echo "$KDIR" > /tmp/kdir
+
+
+      # ==========================================================
+      # VERIFY BASE KERNEL CONFIG
+      # ==========================================================
+
+      - name: Verify base kernel config
+        run: |
+          set -e
+
+          cd wrt
+
+          KDIR="$(cat /tmp/kdir)"
+
           echo "=========================================="
-          echo "GENERATE BASE KERNEL CONFIG"
+          echo "VERIFY BASE KERNEL CONFIG"
           echo "=========================================="
 
-          cd "$KDIR"
-
-          rm -f .config
-          rm -f .config.old
-          rm -f .config.prev
-          rm -f include/config/auto.conf
-          rm -f include/config/auto.conf.cmd
-
-          cd ../../../..
-
-          echo "Running OpenWrt kernel oldconfig non-interactively..."
-
-          yes "" | make target/linux/oldconfig V=s
-
-          cd "$KDIR"
-
-          if [ ! -s .config ]; then
-            echo "ERROR: kernel .config was not generated"
+          if [ ! -s "$KDIR/.config" ]; then
+            echo "ERROR: OpenWrt did not generate kernel .config"
+            echo
+            echo "KERNEL DIRECTORY:"
+            ls -lah "$KDIR"
             exit 1
           fi
 
+          echo "Kernel .config exists:"
+          ls -lh "$KDIR/.config"
+
           echo
-          echo "=========================================="
-          echo "BASE KERNEL CONFIG CREATED"
-          echo "=========================================="
-
-          ls -lh .config
-
+          echo "BASE NETFILTER CONFIG:"
           grep -E \
-            '^CONFIG_(NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)=' \
-            .config || true
+            '^CONFIG_(NF_TABLES|NETFILTER_XTABLES|NFT_COMPAT)=' \
+            "$KDIR/.config" || true
 
 
       # ==========================================================
       # CONFIGURE NFT COMPAT
       # ==========================================================
 
-      - name: Configure nft_compat
+      - name: Configure NFT_COMPAT
         run: |
           set -e
 
           cd wrt
 
-          KDIR="$(find build_dir/target-* \
-            -maxdepth 4 \
-            -type d \
-            -name 'linux-6.12.106' \
-            -print -quit)"
-
-          if [ -z "$KDIR" ]; then
-            echo "ERROR: linux-6.12.106 not found"
-            exit 1
-          fi
+          KDIR="$(cat /tmp/kdir)"
 
           cd "$KDIR"
 
           echo "=========================================="
-          echo "CHECK KERNEL CONFIG"
+          echo "CHECK KCONFIG SYMBOLS"
           echo "=========================================="
-
-          if [ ! -s .config ]; then
-            echo "ERROR: .config does not exist"
-            exit 1
-          fi
 
           echo
-          echo "CURRENT CONFIG:"
-          grep -E \
-            '^CONFIG_(NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)=' \
-            .config || true
-
-
-          # ------------------------------------------------------
-          # CHECK ACTUAL KCONFIG DEFINITIONS
-          # ------------------------------------------------------
-
-          echo
-          echo "=========================================="
-          echo "CHECK KCONFIG DEFINITIONS"
-          echo "=========================================="
-
+          echo "NFT_COMPAT:"
           grep -R \
             -n \
-            -E '^[[:space:]]*config (NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)' \
+            -E '^[[:space:]]*config NFT_COMPAT([[:space:]]|$)' \
             net \
             2>/dev/null || true
 
-
-          # ------------------------------------------------------
-          # CHECK scripts/config
-          # ------------------------------------------------------
+          echo
+          echo "NETFILTER_XTABLES:"
+          grep -R \
+            -n \
+            -E '^[[:space:]]*config NETFILTER_XTABLES([[:space:]]|$)' \
+            net \
+            2>/dev/null || true
 
           if [ ! -x scripts/config ]; then
             echo "ERROR: scripts/config not found"
@@ -364,50 +341,63 @@ jobs:
 
 
           # ------------------------------------------------------
-          # ENABLE REQUIRED SYMBOLS
+          # CHECK REQUIRED SYMBOLS
           # ------------------------------------------------------
 
-          echo
-          echo "=========================================="
-          echo "ENABLE NFT COMPAT"
-          echo "=========================================="
-
-          ./scripts/config --enable NF_TABLES
-
-          ./scripts/config --module NETFILTER_XTABLES
-
-          if grep -R \
+          if ! grep -R \
             -q \
-            -E '^[[:space:]]*config NF_TABLES_COMPAT' \
+            -E '^[[:space:]]*config NFT_COMPAT([[:space:]]|$)' \
             net \
             2>/dev/null; then
 
-            echo "NF_TABLES_COMPAT exists"
-
-            ./scripts/config --module NF_TABLES_COMPAT
-
-          else
-
-            echo "ERROR: NF_TABLES_COMPAT symbol does not exist in this kernel source"
+            echo "ERROR: NFT_COMPAT symbol does not exist"
             exit 1
+          fi
 
+          if ! grep -R \
+            -q \
+            -E '^[[:space:]]*config NETFILTER_XTABLES([[:space:]]|$)' \
+            net \
+            2>/dev/null; then
+
+            echo "ERROR: NETFILTER_XTABLES symbol does not exist"
+            exit 1
           fi
 
 
           # ------------------------------------------------------
-          # NON-INTERACTIVE OLDDEFCONFIG
+          # CONFIGURE DEPENDENCIES
           # ------------------------------------------------------
 
           echo
           echo "=========================================="
-          echo "OLDDEFCONFIG"
+          echo "CONFIGURE NETFILTER"
+          echo "=========================================="
+
+          # nf_tables core
+          ./scripts/config --enable NF_TABLES
+
+          # x_tables core
+          ./scripts/config --module NETFILTER_XTABLES
+
+          # actual nftables compatibility module
+          ./scripts/config --module NFT_COMPAT
+
+
+          # ------------------------------------------------------
+          # RESOLVE DEPENDENCIES
+          # ------------------------------------------------------
+
+          echo
+          echo "=========================================="
+          echo "RUN LINUX OLDDEFCONFIG"
           echo "=========================================="
 
           make olddefconfig
 
 
           # ------------------------------------------------------
-          # VERIFY
+          # SHOW FINAL CONFIG
           # ------------------------------------------------------
 
           echo
@@ -416,21 +406,33 @@ jobs:
           echo "=========================================="
 
           grep -E \
-            '^CONFIG_(NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)=' \
+            '^CONFIG_(NF_TABLES|NETFILTER_XTABLES|NFT_COMPAT)=' \
             .config || true
+
+
+          # ------------------------------------------------------
+          # HARD VERIFY
+          # ------------------------------------------------------
 
           echo
           echo "=========================================="
           echo "VERIFY NFT_COMPAT"
           echo "=========================================="
 
-          if ! grep -q '^CONFIG_NF_TABLES_COMPAT=m$' .config; then
-            echo "ERROR: CONFIG_NF_TABLES_COMPAT=m was not produced"
+          if ! grep -q '^CONFIG_NFT_COMPAT=m$' .config; then
+            echo "ERROR: CONFIG_NFT_COMPAT=m was not produced"
+            exit 1
+          fi
+
+          if ! grep -q '^CONFIG_NETFILTER_XTABLES=m$' .config; then
+            echo "ERROR: CONFIG_NETFILTER_XTABLES=m was not produced"
             exit 1
           fi
 
           echo
-          echo "CONFIG_NF_TABLES_COMPAT=m"
+          echo "CONFIG_NFT_COMPAT=m"
+          echo "CONFIG_NETFILTER_XTABLES=m"
+          echo
           echo "NFT COMPAT CONFIGURATION OK"
 
 
@@ -445,7 +447,7 @@ jobs:
           cd wrt
 
           echo "=========================================="
-          echo "BUILD LINUX KERNEL MODULES"
+          echo "BUILD LINUX KERNEL"
           echo "=========================================="
 
           make target/linux/compile -j2 V=s
@@ -502,6 +504,44 @@ jobs:
           echo
           echo "VERMAGIC:"
           modinfo -F vermagic "$NFT_KO" 2>/dev/null || true
+
+
+      # ==========================================================
+      # VERIFY KERNEL VERSION / VERMAGIC
+      # ==========================================================
+
+      - name: Verify kernel version
+        run: |
+          set -e
+
+          cd wrt
+
+          NFT_KO="$(find build_dir \
+            -type f \
+            -name 'nft_compat.ko' \
+            -print \
+            -quit)"
+
+          if [ -z "$NFT_KO" ]; then
+            echo "ERROR: nft_compat.ko not found"
+            exit 1
+          fi
+
+          echo "=========================================="
+          echo "VERIFY VERMAGIC"
+          echo "=========================================="
+
+          VERMAGIC="$(modinfo -F vermagic "$NFT_KO" 2>/dev/null || true)"
+
+          echo "VERMAGIC=$VERMAGIC"
+
+          if ! echo "$VERMAGIC" | grep -q '^6\.12\.106'; then
+            echo "ERROR: vermagic is not 6.12.106"
+            exit 1
+          fi
+
+          echo
+          echo "VERMAGIC 6.12.106 OK"
 
 
       # ==========================================================
