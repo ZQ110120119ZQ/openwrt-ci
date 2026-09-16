@@ -153,40 +153,81 @@ jobs:
 
           make toolchain/install -j2 V=s
 
-      # ==========================================
-      # VERIFY TOOLCHAIN
-      # ==========================================
-      - name: Verify toolchain
-        run: |
-          set -e
-
-          cd wrt
-
+          echo
           echo "=========================================="
-          echo "VERIFY TOOLCHAIN"
+          echo "CHECK INSTALLED TOOLCHAIN"
           echo "=========================================="
 
-          TOOLCHAIN_DIR="$(find build_dir -maxdepth 3 -type d -name 'toolchain-*' -print -quit)"
+          TOOLCHAIN_DIR="$(find staging_dir \
+            -maxdepth 1 \
+            -mindepth 1 \
+            -type d \
+            -name 'toolchain-*' \
+            -print -quit)"
 
           if [ -z "$TOOLCHAIN_DIR" ]; then
-            echo "ERROR: toolchain directory not found"
-            find build_dir -maxdepth 3 -type d -print | head -100
+            echo "ERROR: installed toolchain was not created"
+
+            echo
+            echo "STAGING DIR:"
+            find staging_dir \
+              -maxdepth 2 \
+              -type d \
+              -print | sort || true
+
+            echo
+            echo "TOOLCHAIN BUILD DIR:"
+            find build_dir \
+              -maxdepth 2 \
+              -type d \
+              -name 'toolchain-*' \
+              -print || true
+
             exit 1
           fi
 
           echo "TOOLCHAIN:"
           echo "$TOOLCHAIN_DIR"
 
-          if [ ! -x "$TOOLCHAIN_DIR/bin/aarch64-openwrt-linux-musl-gcc" ]; then
+          echo
+          echo "TOOLCHAIN BIN:"
+          ls -lah "$TOOLCHAIN_DIR/bin" | head -100
+
+          GCC="$(find "$TOOLCHAIN_DIR/bin" \
+            -maxdepth 1 \
+            -type f \
+            -o \
+            -type l \
+            | grep '/aarch64-openwrt-linux-musl-gcc$' \
+            | head -1 || true)"
+
+          if [ -z "$GCC" ]; then
             echo "ERROR: aarch64-openwrt-linux-musl-gcc not found"
-            ls -lah "$TOOLCHAIN_DIR/bin" | head -100
+
+            echo
+            echo "POSSIBLE AARCH64 GCC:"
+            find "$TOOLCHAIN_DIR/bin" \
+              -maxdepth 1 \
+              \( \
+                -name 'aarch64-openwrt-linux-musl-gcc*' \
+                -o \
+                -name '*openwrt*linux*musl*gcc*' \
+              \) \
+              -ls || true
+
             exit 1
           fi
 
-          "$TOOLCHAIN_DIR/bin/aarch64-openwrt-linux-musl-gcc" --version
+          echo
+          echo "=========================================="
+          echo "GCC FOUND"
+          echo "=========================================="
+
+          echo "$GCC"
+          "$GCC" --version
 
       # ==========================================
-      # PREPARE LINUX
+      # PREPARE LINUX 6.12.106
       # ==========================================
       - name: Prepare Linux 6.12.106
         run: |
@@ -248,11 +289,6 @@ jobs:
 
           echo "KDIR=$KDIR"
 
-          # IMPORTANT:
-          # Do NOT use:
-          # make target/linux/oldconfig
-          #
-          # OpenWrt kernel configuration entry:
           make kernel_oldconfig CONFIG_TARGET=subtarget V=s
 
           echo
@@ -263,8 +299,6 @@ jobs:
           if [ ! -s "$KDIR/.config" ]; then
             echo "ERROR: kernel .config was not generated"
 
-            echo
-            echo "CONFIG FILES:"
             find "$KDIR" \
               -maxdepth 2 \
               -name '.config*' \
@@ -282,16 +316,10 @@ jobs:
           echo "CONFIGURE NFT_COMPAT"
           echo "=========================================="
 
-          # nft_compat.ko = CONFIG_NFT_COMPAT
-          #
-          # Dependency:
-          # CONFIG_NETFILTER_XTABLES
-
           ./scripts/config --enable NF_TABLES
           ./scripts/config --module NETFILTER_XTABLES
           ./scripts/config --module NFT_COMPAT
 
-          # Resolve all Kconfig dependencies
           make olddefconfig
 
           echo
@@ -354,6 +382,7 @@ jobs:
 
             echo
             echo "SEARCH ALL NETFILTER MODULES:"
+
             find build_dir \
               -type f \
               \( \
@@ -365,6 +394,7 @@ jobs:
 
             echo
             echo "KERNEL CONFIG:"
+
             grep -E \
               '^CONFIG_(NF_TABLES|NETFILTER_XTABLES|NFT_COMPAT)=' \
               "$(cat /tmp/kdir)/.config" || true
