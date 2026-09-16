@@ -193,12 +193,10 @@ jobs:
 
           if [ -z "$TOOLCHAIN_DIR" ]; then
             echo "ERROR: OpenWrt toolchain directory not found"
-            find staging_dir -maxdepth 2 -type d -print || true
             exit 1
           fi
 
           GCC_DIR="$TOOLCHAIN_DIR/bin"
-
           GCC="$GCC_DIR/aarch64-openwrt-linux-musl-gcc"
 
           echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR"
@@ -206,10 +204,7 @@ jobs:
           echo "GCC=$GCC"
 
           if [ ! -x "$GCC" ]; then
-            echo "ERROR: GCC not found:"
-            echo "$GCC"
-            echo
-            echo "Toolchain bin directory:"
+            echo "ERROR: GCC not found"
             ls -lah "$GCC_DIR" || true
             exit 1
           fi
@@ -218,16 +213,7 @@ jobs:
           echo "GCC VERSION:"
           "$GCC" --version | head -1
 
-          echo
-          echo "=========================================="
-          echo "EXPORT TOOLCHAIN PATH"
-          echo "=========================================="
-
           echo "$PWD/$GCC_DIR" >> "$GITHUB_PATH"
-
-          echo
-          echo "PATH WILL CONTAIN:"
-          echo "$PWD/$GCC_DIR"
 
 
       # ==========================================================
@@ -248,10 +234,10 @@ jobs:
 
 
       # ==========================================================
-      # CONFIGURE LINUX
+      # GENERATE OPENWRT KERNEL CONFIG
       # ==========================================================
 
-      - name: Configure Linux 6.12.106
+      - name: Generate Linux kernel config
         run: |
           set -e
 
@@ -268,138 +254,148 @@ jobs:
             -print -quit)"
 
           if [ -z "$KDIR" ]; then
-            echo "ERROR: linux-6.12.106 directory not found"
+            echo "ERROR: linux-6.12.106 not found"
             exit 1
           fi
 
           echo "KDIR=$KDIR"
 
+          echo
+          echo "=========================================="
+          echo "GENERATE BASE KERNEL CONFIG"
+          echo "=========================================="
+
           cd "$KDIR"
 
+          rm -f .config
+          rm -f .config.old
+          rm -f .config.prev
+          rm -f include/config/auto.conf
+          rm -f include/config/auto.conf.cmd
 
-          # ------------------------------------------------------
-          # TOOLCHAIN CHECK
-          # ------------------------------------------------------
+          cd ../../../..
 
-          echo
-          echo "=========================================="
-          echo "CHECK TOOLCHAIN"
-          echo "=========================================="
+          echo "Running OpenWrt kernel oldconfig non-interactively..."
 
-          command -v aarch64-openwrt-linux-musl-gcc
-          aarch64-openwrt-linux-musl-gcc --version | head -1
+          yes "" | make target/linux/oldconfig V=s
 
+          cd "$KDIR"
 
-          # ------------------------------------------------------
-          # CHECK KERNEL SOURCE
-          # ------------------------------------------------------
-
-          echo
-          echo "=========================================="
-          echo "CHECK KERNEL SOURCE"
-          echo "=========================================="
-
-          if [ ! -f net/netfilter/nft_compat.c ]; then
-            echo "ERROR: net/netfilter/nft_compat.c not found"
+          if [ ! -s .config ]; then
+            echo "ERROR: kernel .config was not generated"
             exit 1
           fi
 
-          echo "nft_compat.c FOUND"
+          echo
+          echo "=========================================="
+          echo "BASE KERNEL CONFIG CREATED"
+          echo "=========================================="
+
+          ls -lh .config
+
+          grep -E \
+            '^CONFIG_(NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)=' \
+            .config || true
+
+
+      # ==========================================================
+      # CONFIGURE NFT COMPAT
+      # ==========================================================
+
+      - name: Configure nft_compat
+        run: |
+          set -e
+
+          cd wrt
+
+          KDIR="$(find build_dir/target-* \
+            -maxdepth 4 \
+            -type d \
+            -name 'linux-6.12.106' \
+            -print -quit)"
+
+          if [ -z "$KDIR" ]; then
+            echo "ERROR: linux-6.12.106 not found"
+            exit 1
+          fi
+
+          cd "$KDIR"
+
+          echo "=========================================="
+          echo "CHECK KERNEL CONFIG"
+          echo "=========================================="
+
+          if [ ! -s .config ]; then
+            echo "ERROR: .config does not exist"
+            exit 1
+          fi
+
+          echo
+          echo "CURRENT CONFIG:"
+          grep -E \
+            '^CONFIG_(NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)=' \
+            .config || true
 
 
           # ------------------------------------------------------
-          # CHECK REAL KCONFIG SYMBOLS
+          # CHECK ACTUAL KCONFIG DEFINITIONS
           # ------------------------------------------------------
 
           echo
           echo "=========================================="
-          echo "CHECK REAL KCONFIG SYMBOLS"
+          echo "CHECK KCONFIG DEFINITIONS"
           echo "=========================================="
 
           grep -R \
+            -n \
             -E '^[[:space:]]*config (NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)' \
-            net/netfilter \
             net \
-            2>/dev/null | head -100 || true
+            2>/dev/null || true
 
 
           # ------------------------------------------------------
-          # KERNEL CONFIG TOOL
+          # CHECK scripts/config
           # ------------------------------------------------------
-
-          echo
-          echo "=========================================="
-          echo "CHECK scripts/config"
-          echo "=========================================="
 
           if [ ! -x scripts/config ]; then
             echo "ERROR: scripts/config not found"
             exit 1
           fi
 
-          echo "scripts/config OK"
-
 
           # ------------------------------------------------------
-          # CREATE BASE KERNEL CONFIG
+          # ENABLE REQUIRED SYMBOLS
           # ------------------------------------------------------
 
           echo
           echo "=========================================="
-          echo "CREATE BASE KERNEL CONFIG"
-          echo "=========================================="
-
-          if [ ! -f .config ]; then
-            echo "No kernel .config found"
-            echo "Running OpenWrt kernel configuration first"
-
-            cd ../../../..
-
-            make target/linux/compile V=s \
-              CONFIG_PACKAGE_kmod-nft-compat=m \
-              || true
-
-            cd "$KDIR"
-          fi
-
-
-          # ------------------------------------------------------
-          # SHOW CONFIG BEFORE CHANGE
-          # ------------------------------------------------------
-
-          echo
-          echo "=========================================="
-          echo "CONFIG BEFORE CHANGE"
-          echo "=========================================="
-
-          if [ -f .config ]; then
-            grep -E \
-              '^CONFIG_(NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)=' \
-              .config || true
-          else
-            echo "ERROR: kernel .config still does not exist"
-            exit 1
-          fi
-
-
-          # ------------------------------------------------------
-          # SET REQUIRED SYMBOLS
-          # ------------------------------------------------------
-
-          echo
-          echo "=========================================="
-          echo "SET NETFILTER CONFIG"
+          echo "ENABLE NFT COMPAT"
           echo "=========================================="
 
           ./scripts/config --enable NF_TABLES
 
-          ./scripts/config --module NF_TABLES_COMPAT
-
           ./scripts/config --module NETFILTER_XTABLES
+
+          if grep -R \
+            -q \
+            -E '^[[:space:]]*config NF_TABLES_COMPAT' \
+            net \
+            2>/dev/null; then
+
+            echo "NF_TABLES_COMPAT exists"
+
+            ./scripts/config --module NF_TABLES_COMPAT
+
+          else
+
+            echo "ERROR: NF_TABLES_COMPAT symbol does not exist in this kernel source"
+            exit 1
+
+          fi
 
 
           # ------------------------------------------------------
-          # OLDDEFCONFIG
+          # NON-INTERACTIVE OLDDEFCONFIG
           # ------------------------------------------------------
 
           echo
@@ -411,59 +407,31 @@ jobs:
 
 
           # ------------------------------------------------------
-          # FINAL CONFIG
+          # VERIFY
           # ------------------------------------------------------
 
           echo
           echo "=========================================="
-          echo "FINAL KERNEL NETFILTER CONFIG"
+          echo "FINAL NETFILTER CONFIG"
           echo "=========================================="
 
           grep -E \
             '^CONFIG_(NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)=' \
             .config || true
 
-
-          # ------------------------------------------------------
-          # VERIFY TARGET
-          # ------------------------------------------------------
-
           echo
           echo "=========================================="
-          echo "VERIFY NFT_COMPAT CONFIG"
+          echo "VERIFY NFT_COMPAT"
           echo "=========================================="
 
           if ! grep -q '^CONFIG_NF_TABLES_COMPAT=m$' .config; then
-
-            echo
-            echo "CONFIG_NF_TABLES_COMPAT=m was NOT produced."
-            echo
-            echo "Actual relevant configuration:"
-            grep -E \
-              '^CONFIG_(NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)=' \
-              .config || true
-
-            echo
-            echo "Kconfig definition:"
-            grep -R \
-              -n \
-              -A12 \
-              -B3 \
-              'config NF_TABLES_COMPAT' \
-              net \
-              2>/dev/null | head -80 || true
-
+            echo "ERROR: CONFIG_NF_TABLES_COMPAT=m was not produced"
             exit 1
           fi
 
           echo
-          echo "=========================================="
-          echo "NFT_COMPAT CONFIGURATION OK"
-          echo "=========================================="
-
-          grep -E \
-            '^CONFIG_(NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)=' \
-            .config || true
+          echo "CONFIG_NF_TABLES_COMPAT=m"
+          echo "NFT COMPAT CONFIGURATION OK"
 
 
       # ==========================================================
@@ -477,7 +445,7 @@ jobs:
           cd wrt
 
           echo "=========================================="
-          echo "BUILD LINUX KERNEL"
+          echo "BUILD LINUX KERNEL MODULES"
           echo "=========================================="
 
           make target/linux/compile -j2 V=s
