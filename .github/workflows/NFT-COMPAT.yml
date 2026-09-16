@@ -20,6 +20,7 @@ jobs:
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
+
           sudo apt-get clean
 
           echo "=========================================="
@@ -67,7 +68,7 @@ jobs:
 
 
       # ==========================================================
-      # CLONE EXACT IMMORTALWRT COMMIT
+      # CLONE EXACT IMMORTALWRT
       # ==========================================================
 
       - name: Clone exact ImmortalWrt source
@@ -101,7 +102,7 @@ jobs:
 
 
       # ==========================================================
-      # CONFIGURE OPENWRT TARGET
+      # OPENWRT TARGET CONFIG
       # ==========================================================
 
       - name: Configure OpenWrt target
@@ -134,7 +135,7 @@ jobs:
 
 
       # ==========================================================
-      # BUILD HOST TOOLS
+      # HOST TOOLS
       # ==========================================================
 
       - name: Build host tools
@@ -151,7 +152,7 @@ jobs:
 
 
       # ==========================================================
-      # BUILD TOOLCHAIN
+      # TOOLCHAIN
       # ==========================================================
 
       - name: Build toolchain
@@ -168,7 +169,61 @@ jobs:
 
 
       # ==========================================================
-      # PREPARE LINUX 6.12.106
+      # VERIFY TOOLCHAIN
+      # ==========================================================
+
+      - name: Verify OpenWrt toolchain
+        run: |
+          set -e
+
+          cd wrt
+
+          echo "=========================================="
+          echo "LOCATE AARCH64 GCC"
+          echo "=========================================="
+
+          GCC="$(find staging_dir \
+            -type f \
+            -name 'aarch64-openwrt-linux-musl-gcc' \
+            -perm -111 \
+            -print \
+            -quit)"
+
+          if [ -z "$GCC" ]; then
+            echo "ERROR: aarch64-openwrt-linux-musl-gcc not found"
+            echo
+            echo "Available gcc binaries:"
+            find staging_dir \
+              -type f \
+              -name '*gcc' \
+              -perm -111 \
+              -print | head -50 || true
+            exit 1
+          fi
+
+          GCC_DIR="$(dirname "$GCC")"
+
+          echo "GCC=$GCC"
+          echo "GCC_DIR=$GCC_DIR"
+
+          echo
+          echo "GCC VERSION:"
+          "$GCC" --version | head -1
+
+          echo
+          echo "=========================================="
+          echo "EXPORT TOOLCHAIN PATH"
+          echo "=========================================="
+
+          echo "$PWD/$GCC_DIR" >> "$GITHUB_PATH"
+
+          echo
+          echo "PATH WILL CONTAIN:"
+          echo "$PWD/$GCC_DIR"
+
+
+      # ==========================================================
+      # PREPARE LINUX
       # ==========================================================
 
       - name: Prepare Linux 6.12.106
@@ -185,7 +240,7 @@ jobs:
 
 
       # ==========================================================
-      # CONFIGURE LINUX 6.12.106
+      # CONFIGURE LINUX
       # ==========================================================
 
       - name: Configure Linux 6.12.106
@@ -206,15 +261,6 @@ jobs:
 
           if [ -z "$KDIR" ]; then
             echo "ERROR: linux-6.12.106 directory not found"
-
-            echo
-            echo "AVAILABLE LINUX DIRECTORIES:"
-            find build_dir/target-* \
-              -maxdepth 4 \
-              -type d \
-              -name 'linux-*' \
-              -print || true
-
             exit 1
           fi
 
@@ -224,46 +270,16 @@ jobs:
 
           echo
           echo "=========================================="
-          echo "KERNEL CONFIG FILE"
+          echo "CHECK TOOLCHAIN"
           echo "=========================================="
 
-          if [ -f .config ]; then
-            echo ".config already exists"
-          else
-            echo ".config does not exist yet"
-          fi
+          command -v aarch64-openwrt-linux-musl-gcc
+
+          aarch64-openwrt-linux-musl-gcc --version | head -1
 
 
           # ------------------------------------------------------
-          # MAKE SURE KERNEL KCONFIG TOOL EXISTS
-          # ------------------------------------------------------
-
-          echo
-          echo "=========================================="
-          echo "CHECK SCRIPTS/CONFIG"
-          echo "=========================================="
-
-          if [ ! -x scripts/config ]; then
-            echo "scripts/config not found"
-            echo "Generating kernel configuration tools..."
-
-            make \
-              ARCH=arm64 \
-              CROSS_COMPILE=aarch64-openwrt-linux-musl- \
-              scripts
-
-          fi
-
-          if [ ! -x scripts/config ]; then
-            echo "ERROR: scripts/config still not available"
-            exit 1
-          fi
-
-          echo "scripts/config OK"
-
-
-          # ------------------------------------------------------
-          # NETFILTER CONFIGURATION
+          # KERNEL CONFIG
           # ------------------------------------------------------
 
           echo
@@ -271,12 +287,21 @@ jobs:
           echo "CONFIGURE NETFILTER COMPAT"
           echo "=========================================="
 
+          if [ ! -x scripts/config ]; then
+            echo "ERROR: scripts/config not found"
+            exit 1
+          fi
+
+          # nftables
           ./scripts/config --enable NF_TABLES
 
+          # Xtables
           ./scripts/config --module NETFILTER_XTABLES
 
+          # Xtables compatibility
           ./scripts/config --enable NETFILTER_XTABLES_COMPAT
 
+          # nftables xtables compatibility
           ./scripts/config --module NF_TABLES_COMPAT
 
 
@@ -289,10 +314,7 @@ jobs:
           echo "OLDDEFCONFIG"
           echo "=========================================="
 
-          make \
-            ARCH=arm64 \
-            CROSS_COMPILE=aarch64-openwrt-linux-musl- \
-            olddefconfig
+          make olddefconfig
 
 
           # ------------------------------------------------------
@@ -343,14 +365,14 @@ jobs:
           cd wrt
 
           echo "=========================================="
-          echo "BUILD LINUX KERNEL MODULES"
+          echo "BUILD LINUX KERNEL"
           echo "=========================================="
 
           make target/linux/compile -j2 V=s
 
 
       # ==========================================================
-      # VERIFY NFT_COMPAT
+      # FIND NFT_COMPAT
       # ==========================================================
 
       - name: Verify nft_compat module
@@ -378,23 +400,6 @@ jobs:
           if [ -z "$NFT_KO" ]; then
             echo
             echo "ERROR: nft_compat.ko NOT FOUND"
-
-            echo
-            echo "CHECK CONFIG:"
-
-            KCONFIG="$(find build_dir/target-* \
-              -maxdepth 5 \
-              -type f \
-              -path '*/linux-6.12.106/.config' \
-              -print \
-              -quit)"
-
-            if [ -n "$KCONFIG" ]; then
-              grep -E \
-                '^CONFIG_(NF_TABLES|NF_TABLES_COMPAT|NETFILTER_XTABLES|NETFILTER_XTABLES_COMPAT)=' \
-                "$KCONFIG" || true
-            fi
-
             exit 1
           fi
 
@@ -420,7 +425,7 @@ jobs:
 
 
       # ==========================================================
-      # COLLECT RESULT
+      # COLLECT
       # ==========================================================
 
       - name: Collect result
