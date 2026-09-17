@@ -291,7 +291,7 @@ jobs:
           echo "KERNEL DIRECTORY:"
           echo "$KDIR"
 
-          VERSION="$(make -C "$KDIR" kernelversion | tr -d '\r\n')"
+          VERSION="$(make -s -C "$KDIR" kernelversion 2>/dev/null | tr -d '\r\n')"
 
           echo
           echo "KERNEL VERSION:"
@@ -301,6 +301,9 @@ jobs:
             echo "ERROR: Expected 6.12.106, got $VERSION"
             exit 1
           fi
+
+          echo
+          echo "KERNEL VERSION CHECK PASSED."
 
       # ==========================================
       # FORCE KERNEL CONFIG
@@ -453,6 +456,9 @@ jobs:
               -o -name 'iptable_nat.ko' \
               -o -name 'xt_REDIRECT.ko' \
               -o -name 'xt_MASQUERADE.ko' \
+              -o -name 'xt_MARK.ko' \
+              -o -name 'xt_NFLOG.ko' \
+              -o -name 'xt_TCPMSS.ko' \
               -o -name 'xt_comment.ko' \
               -o -name 'xt_conntrack.ko' \
               -o -name 'xt_mark.ko' \
@@ -518,7 +524,7 @@ jobs:
           esac
 
       # ==========================================
-      # BUILD PACKAGE INDEX / PACKAGE TARGET
+      # BUILD REQUIRED PACKAGES
       # ==========================================
       - name: Build required packages
         run: |
@@ -571,6 +577,9 @@ jobs:
               -o -name 'iptable_nat.ko' \
               -o -name 'xt_REDIRECT.ko' \
               -o -name 'xt_MASQUERADE.ko' \
+              -o -name 'xt_MARK.ko' \
+              -o -name 'xt_NFLOG.ko' \
+              -o -name 'xt_TCPMSS.ko' \
               -o -name 'xt_comment.ko' \
               -o -name 'xt_conntrack.ko' \
               -o -name 'xt_mark.ko' \
@@ -593,14 +602,14 @@ jobs:
           echo "RESULT FILES"
           echo "=========================================="
 
-          find result -type f -maxdepth 1 -print -exec ls -lh {} \;
+          find result -maxdepth 1 -type f -print -exec ls -lh {} \;
 
           echo
           echo "=========================================="
           echo "SHA256"
           echo "=========================================="
 
-          find result -type f -maxdepth 1 -exec sha256sum {} \;
+          find result -maxdepth 1 -type f -exec sha256sum {} \;
 
           echo
           echo "=========================================="
