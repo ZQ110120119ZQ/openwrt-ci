@@ -1,4 +1,4 @@
-name: Build iptables-nft Compat 6.12.106
+name: Build kmod-nft-compat 6.12.106
 
 on:
   workflow_dispatch:
@@ -9,28 +9,29 @@ jobs:
 
     steps:
 
-      # ==========================================
+      # ============================================================
       # FREE DISK SPACE
-      # ==========================================
+      # ============================================================
       - name: Free disk space
         run: |
-          set -e
+          set -eux
 
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
           sudo rm -rf /usr/share/swift
           sudo rm -rf /opt/hostedtoolcache/CodeQL
+
           sudo apt-get clean
 
           df -h
 
-      # ==========================================
+      # ============================================================
       # BUILD DEPENDENCIES
-      # ==========================================
+      # ============================================================
       - name: Install build dependencies
         run: |
-          set -e
+          set -eux
 
           sudo apt-get update
 
@@ -60,22 +61,26 @@ jobs:
             ccache \
             xz-utils \
             bc \
-            kmod
+            kmod \
+            pkg-config \
+            libdw-dev
 
-      # ==========================================
-      # CLONE EXACT IMMORTALWRT
-      # ==========================================
+      # ============================================================
+      # CLONE EXACT IMMORTALWRT SOURCE
+      # ============================================================
       - name: Clone exact ImmortalWrt source
         run: |
-          set -e
+          set -eux
 
           git clone https://github.com/VIKINGYFY/immortalwrt.git wrt
 
           cd wrt
 
-          FULL_SHA="$(curl -fsSL \
-            https://api.github.com/repos/VIKINGYFY/immortalwrt/commits/3c810bd \
-            | python3 -c 'import sys,json; print(json.load(sys.stdin)["sha"])')"
+          FULL_SHA="$(
+            curl -fsSL \
+              https://api.github.com/repos/VIKINGYFY/immortalwrt/commits/3c810bd \
+              | python3 -c 'import sys,json; print(json.load(sys.stdin)["sha"])'
+          )"
 
           echo "=========================================="
           echo "IMMORTALWRT COMMIT"
@@ -94,12 +99,12 @@ jobs:
           echo "CURRENT VERSION:"
           git log -1 --oneline
 
-      # ==========================================
-      # OPENWRT TARGET CONFIG
-      # ==========================================
-      - name: Configure OpenWrt target
+      # ============================================================
+      # CONFIGURE TARGET
+      # ============================================================
+      - name: Configure target
         run: |
-          set -e
+          set -eux
 
           cd wrt
 
@@ -108,170 +113,39 @@ jobs:
           CONFIG_TARGET_qualcommax_ipq60xx=y
           CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02=y
 
-          CONFIG_PACKAGE_kmod-ipt-core=m
           CONFIG_PACKAGE_kmod-nft-compat=m
-
           CONFIG_PACKAGE_iptables-nft=y
           EOF
 
-          echo "=========================================="
-          echo "OPENWRT DEFCONFIG"
-          echo "=========================================="
-
           make defconfig
 
           echo
           echo "=========================================="
-          echo "PACKAGE CONFIG"
+          echo "RESOLVED PACKAGE CONFIG"
           echo "=========================================="
 
           grep -E \
-            '^CONFIG_PACKAGE_(kmod-ipt-core|kmod-nft-compat|iptables-nft)=' \
+            '^CONFIG_PACKAGE_(kmod-nft-compat|iptables-nft)=' \
             .config || true
 
-          echo
-          echo "=========================================="
-          echo "KERNEL CONFIG REQUEST"
-          echo "=========================================="
-
-          cat >> .config <<'EOF'
-
-          # ==========================================
-          # NETFILTER / IPTABLES COMPAT
-          # ==========================================
-
-          CONFIG_NETFILTER=y
-          CONFIG_NETFILTER_ADVANCED=y
-          CONFIG_NETFILTER_NETLINK=y
-          CONFIG_NETFILTER_XTABLES=y
-
-          CONFIG_NF_CONNTRACK=y
-          CONFIG_NF_NAT=m
-
-          CONFIG_NF_TABLES=y
-          CONFIG_NFT_COMPAT=m
-
-          CONFIG_NETFILTER_XT_TARGET_REDIRECT=m
-          CONFIG_NETFILTER_XT_TARGET_MASQUERADE=m
-          CONFIG_NETFILTER_XT_TARGET_MARK=m
-          CONFIG_NETFILTER_XT_TARGET_NFLOG=m
-          CONFIG_NETFILTER_XT_TARGET_TCPMSS=m
-
-          CONFIG_NETFILTER_XT_MATCH_COMMENT=m
-          CONFIG_NETFILTER_XT_MATCH_CONNTRACK=m
-          CONFIG_NETFILTER_XT_MATCH_MARK=m
-          CONFIG_NETFILTER_XT_MATCH_MULTIPORT=m
-          CONFIG_NETFILTER_XT_MATCH_SOCKET=m
-          CONFIG_NETFILTER_XT_MATCH_STATE=m
-
-          CONFIG_IP_NF_IPTABLES=m
-          CONFIG_IP_NF_FILTER=m
-          CONFIG_IP_NF_NAT=m
-          CONFIG_IP_NF_TARGET_MASQUERADE=m
-          CONFIG_IP_NF_TARGET_REDIRECT=m
-
-          CONFIG_IP6_NF_IPTABLES=m
-          CONFIG_IP6_NF_FILTER=m
-          CONFIG_IP6_NF_NAT=m
-          EOF
-
-          make defconfig
-
-          echo
-          echo "=========================================="
-          echo "FINAL PACKAGE CONFIG"
-          echo "=========================================="
-
-          grep -E \
-            '^CONFIG_PACKAGE_(kmod-ipt-core|kmod-nft-compat|iptables-nft)=' \
-            .config || true
-
-          echo
-          echo "=========================================="
-          echo "FINAL REQUESTED KERNEL CONFIG"
-          echo "=========================================="
-
-          grep -E \
-            '^CONFIG_(NETFILTER|NETFILTER_ADVANCED|NETFILTER_NETLINK|NETFILTER_XTABLES|NF_CONNTRACK|NF_NAT|NF_TABLES|NFT_COMPAT|IP_NF|IP6_NF)=' \
-            .config || true
-
-      # ==========================================
-      # VERIFY CONFIG RESOLUTION
-      # ==========================================
-      - name: Verify configuration resolution
-        run: |
-          set -e
-
-          cd wrt
-
-          echo "=========================================="
-          echo "CONFIG RESOLUTION"
-          echo "=========================================="
-
-          make defconfig
-
-          echo
-          echo "PACKAGE:"
-          grep -E \
-            '^CONFIG_PACKAGE_(kmod-ipt-core|kmod-nft-compat|iptables-nft)=' \
-            .config || true
-
-          echo
-          echo "NETFILTER:"
-          grep -E \
-            '^CONFIG_(NETFILTER|NETFILTER_ADVANCED|NETFILTER_NETLINK|NETFILTER_XTABLES|NF_CONNTRACK|NF_NAT|NF_TABLES|NFT_COMPAT|IP_NF|IP6_NF)=' \
-            .config || true
-
-      # ==========================================
-      # BUILD HOST TOOLS
-      # ==========================================
-      - name: Build host tools
-        run: |
-          set -e
-
-          cd wrt
-
-          echo "=========================================="
-          echo "BUILD HOST TOOLS"
-          echo "=========================================="
-
-          make tools/install -j$(nproc)
-
-      # ==========================================
-      # BUILD TOOLCHAIN
-      # ==========================================
-      - name: Build toolchain
-        run: |
-          set -e
-
-          cd wrt
-
-          echo "=========================================="
-          echo "BUILD TOOLCHAIN"
-          echo "=========================================="
-
-          make toolchain/install -j$(nproc)
-
-      # ==========================================
+      # ============================================================
       # PREPARE LINUX 6.12.106
-      # ==========================================
+      # ============================================================
       - name: Prepare Linux 6.12.106
         run: |
-          set -e
+          set -eux
 
           cd wrt
-
-          echo "=========================================="
-          echo "PREPARE LINUX"
-          echo "=========================================="
 
           make target/linux/prepare V=s
 
-          KDIR="$(find build_dir/target-* \
-            -maxdepth 5 \
-            -type d \
-            -name 'linux-6.12.106' \
-            -print -quit)"
+          KDIR="$(
+            find build_dir/target-* \
+              -maxdepth 5 \
+              -type d \
+              -name 'linux-6.12.106' \
+              -print -quit
+          )"
 
           if [ -z "$KDIR" ]; then
             echo "ERROR: Linux 6.12.106 source directory not found"
@@ -291,210 +165,211 @@ jobs:
           echo "KERNEL DIRECTORY:"
           echo "$KDIR"
 
-          VERSION="$(make -s -C "$KDIR" kernelversion 2>/dev/null | tr -d '\r\n')"
+          VERSION="$(
+            make -s -C "$KDIR" kernelversion 2>/dev/null \
+              | tr -d '\r\n'
+          )"
 
           echo
           echo "KERNEL VERSION:"
           echo "$VERSION"
 
           if [ "$VERSION" != "6.12.106" ]; then
-            echo "ERROR: Expected 6.12.106, got $VERSION"
+            echo "ERROR: Expected 6.12.106"
+            echo "       Got: $VERSION"
             exit 1
           fi
 
           echo
-          echo "KERNEL VERSION CHECK PASSED."
+          echo "SUCCESS: Linux 6.12.106 confirmed."
 
-      # ==========================================
-      # FORCE KERNEL CONFIG
-      # ==========================================
-      - name: Apply kernel Netfilter configuration
+      # ============================================================
+      # RESOLVE KERNEL CONFIG
+      # ============================================================
+      - name: Resolve kernel configuration
         run: |
-          set -e
+          set -eux
 
           cd wrt
 
           KDIR="$(cat /tmp/kdir)"
 
           echo "=========================================="
-          echo "APPLY KERNEL CONFIG"
-          echo "=========================================="
-
-          cd "$KDIR"
-
-          echo "Before kernel config:"
-          grep -E \
-            '^CONFIG_(NETFILTER|NETFILTER_ADVANCED|NETFILTER_NETLINK|NETFILTER_XTABLES|NF_CONNTRACK|NF_NAT|NF_TABLES|NFT_COMPAT|IP_NF|IP6_NF)=' \
-            .config || true
-
-          ./scripts/config --enable NETFILTER
-          ./scripts/config --enable NETFILTER_ADVANCED
-          ./scripts/config --enable NETFILTER_NETLINK
-          ./scripts/config --enable NETFILTER_XTABLES
-
-          ./scripts/config --enable NF_CONNTRACK
-          ./scripts/config --module NF_NAT
-
-          ./scripts/config --enable NF_TABLES
-          ./scripts/config --module NFT_COMPAT
-
-          ./scripts/config --module NETFILTER_XT_TARGET_REDIRECT
-          ./scripts/config --module NETFILTER_XT_TARGET_MASQUERADE
-          ./scripts/config --module NETFILTER_XT_TARGET_MARK
-          ./scripts/config --module NETFILTER_XT_TARGET_NFLOG
-          ./scripts/config --module NETFILTER_XT_TARGET_TCPMSS
-
-          ./scripts/config --module NETFILTER_XT_MATCH_COMMENT
-          ./scripts/config --module NETFILTER_XT_MATCH_CONNTRACK
-          ./scripts/config --module NETFILTER_XT_MATCH_MARK
-          ./scripts/config --module NETFILTER_XT_MATCH_MULTIPORT
-          ./scripts/config --module NETFILTER_XT_MATCH_SOCKET
-          ./scripts/config --module NETFILTER_XT_MATCH_STATE
-
-          ./scripts/config --module IP_NF_IPTABLES
-          ./scripts/config --module IP_NF_FILTER
-          ./scripts/config --module IP_NF_NAT
-          ./scripts/config --module IP_NF_TARGET_MASQUERADE
-          ./scripts/config --module IP_NF_TARGET_REDIRECT
-
-          ./scripts/config --module IP6_NF_IPTABLES
-          ./scripts/config --module IP6_NF_FILTER
-          ./scripts/config --module IP6_NF_NAT
-
-          make olddefconfig
-
-          echo
-          echo "=========================================="
-          echo "FINAL KERNEL CONFIG"
+          echo "KERNEL CONFIG BEFORE PACKAGE BUILD"
           echo "=========================================="
 
           grep -E \
-            '^CONFIG_(NETFILTER|NETFILTER_ADVANCED|NETFILTER_NETLINK|NETFILTER_XTABLES|NF_CONNTRACK|NF_NAT|NF_TABLES|NFT_COMPAT|IP_NF|IP6_NF)=' \
-            .config || true
-
-      # ==========================================
-      # BUILD KERNEL
-      # ==========================================
-      - name: Build Linux kernel modules
-        run: |
-          set -e
-
-          cd wrt
-
-          echo "=========================================="
-          echo "BUILD LINUX"
-          echo "=========================================="
-
-          make target/linux/compile -j$(nproc)
-
-      # ==========================================
-      # VERIFY KERNEL CONFIG
-      # ==========================================
-      - name: Verify final kernel configuration
-        run: |
-          set -e
-
-          cd wrt
-
-          KDIR="$(cat /tmp/kdir)"
-
-          echo "=========================================="
-          echo "VERIFY FINAL KERNEL CONFIG"
-          echo "=========================================="
-
-          grep -E \
-            '^CONFIG_(NETFILTER|NETFILTER_ADVANCED|NETFILTER_NETLINK|NETFILTER_XTABLES|NF_CONNTRACK|NF_NAT|NF_TABLES|NFT_COMPAT|IP_NF|IP6_NF)=' \
+            '^CONFIG_(NETFILTER|NETFILTER_XTABLES|NF_TABLES|NFT_COMPAT)=' \
             "$KDIR/.config" || true
 
           echo
           echo "=========================================="
-          echo "CHECK REQUIRED CONFIG"
+          echo "KERNEL PACKAGE DEFINITION"
           echo "=========================================="
 
-          for CONFIG in \
-            CONFIG_NETFILTER \
-            CONFIG_NETFILTER_XTABLES \
-            CONFIG_NF_TABLES \
-            CONFIG_NFT_COMPAT \
-            CONFIG_IP_NF_IPTABLES \
-            CONFIG_IP_NF_FILTER \
-            CONFIG_IP_NF_NAT
-          do
-            VALUE="$(sed -n "s/^${CONFIG}=//p" "$KDIR/.config")"
+          grep -n -A35 -B5 \
+            'KernelPackage/nft-compat' \
+            package/kernel/linux/modules/netfilter.mk || true
 
-            echo "$CONFIG=$VALUE"
-
-            if [ "$VALUE" != "y" ] && [ "$VALUE" != "m" ]; then
-              echo "ERROR: $CONFIG is not enabled"
-              exit 1
-            fi
-          done
-
-          echo
-          echo "SUCCESS: required Netfilter/iptables configuration exists"
-
-      # ==========================================
-      # FIND REQUIRED MODULES
-      # ==========================================
-      - name: Find required kernel modules
+      # ============================================================
+      # BUILD HOST TOOLS
+      # ============================================================
+      - name: Build host tools
         run: |
-          set -e
+          set -eux
+
+          cd wrt
+
+          make tools/install -j"$(nproc)"
+
+      # ============================================================
+      # BUILD TOOLCHAIN
+      # ============================================================
+      - name: Build toolchain
+        run: |
+          set -eux
+
+          cd wrt
+
+          make toolchain/install -j"$(nproc)"
+
+      # ============================================================
+      # BUILD KERNEL PACKAGES
+      # ============================================================
+      - name: Build Linux kernel packages
+        run: |
+          set -eux
 
           cd wrt
 
           echo "=========================================="
-          echo "SEARCH REQUIRED MODULES"
+          echo "BUILD KERNEL PACKAGES"
           echo "=========================================="
 
-          find build_dir \
+          make package/kernel/linux/compile V=s -j"$(nproc)"
+
+      # ============================================================
+      # LOCATE kmod-nft-compat APK
+      # ============================================================
+      - name: Locate kmod-nft-compat APK
+        run: |
+          set -eux
+
+          cd wrt
+
+          echo "=========================================="
+          echo "SEARCH kmod-nft-compat APK"
+          echo "=========================================="
+
+          find bin \
             -type f \
-            \( \
-              -name 'nft_compat.ko' \
-              -o -name 'x_tables.ko' \
-              -o -name 'ip_tables.ko' \
-              -o -name 'iptable_filter.ko' \
-              -o -name 'iptable_nat.ko' \
-              -o -name 'xt_REDIRECT.ko' \
-              -o -name 'xt_MASQUERADE.ko' \
-              -o -name 'xt_MARK.ko' \
-              -o -name 'xt_NFLOG.ko' \
-              -o -name 'xt_TCPMSS.ko' \
-              -o -name 'xt_comment.ko' \
-              -o -name 'xt_conntrack.ko' \
-              -o -name 'xt_mark.ko' \
-              -o -name 'xt_multiport.ko' \
-              -o -name 'xt_socket.ko' \
-            \) \
+            -name 'kmod-nft-compat*.apk' \
             -print | sort
 
-      # ==========================================
-      # VERIFY NFT COMPAT
-      # ==========================================
-      - name: Verify nft compat module
-        run: |
-          set -e
+          APK="$(
+            find bin \
+              -type f \
+              -name 'kmod-nft-compat*.apk' \
+              -print -quit
+          )"
 
-          cd wrt
-
-          NFT_KO="$(find build_dir \
-            -type f \
-            -name 'nft_compat.ko' \
-            -print -quit)"
-
-          if [ -z "$NFT_KO" ]; then
-            echo "ERROR: nft_compat.ko was NOT generated"
+          if [ -z "$APK" ]; then
+            echo
+            echo "ERROR: kmod-nft-compat APK was not generated."
 
             echo
-            echo "ALL NETFILTER MODULES:"
-            find build_dir \
+            echo "ALL KERNEL APK:"
+            find bin \
               -type f \
-              \( -name '*nft*.ko' -o -name '*xt*.ko' -o -name '*table*.ko' \) \
+              -name 'kmod-*.apk' \
               -print | sort || true
 
             exit 1
           fi
 
-          echo "NFT COMPAT:"
+          echo
+          echo "FOUND:"
+          echo "$APK"
+
+          echo "$APK" > /tmp/nft_apk
+
+      # ============================================================
+      # VERIFY APK CONTENT
+      # ============================================================
+      - name: Verify APK content
+        run: |
+          set -eux
+
+          cd wrt
+
+          APK="$(cat /tmp/nft_apk)"
+
+          echo "=========================================="
+          echo "APK FILE"
+          echo "=========================================="
+
+          file "$APK"
+          ls -lh "$APK"
+
+          echo
+          echo "=========================================="
+          echo "APK SHA256"
+          echo "=========================================="
+
+          sha256sum "$APK"
+
+          echo
+          echo "=========================================="
+          echo "APK CONTENT"
+          echo "=========================================="
+
+          tar -tf "$APK" | grep -E \
+            '(^|/)nft_compat\.ko$|(^|/)modules/.*/nft_compat\.ko$' \
+            || true
+
+          if ! tar -tf "$APK" | grep -Eq \
+            '(^|/)nft_compat\.ko$|(^|/)modules/.*/nft_compat\.ko$'
+          then
+            echo
+            echo "ERROR: nft_compat.ko is NOT inside kmod-nft-compat APK"
+            exit 1
+          fi
+
+          echo
+          echo "SUCCESS: nft_compat.ko exists inside APK."
+
+      # ============================================================
+      # EXTRACT AND VERIFY MODULE
+      # ============================================================
+      - name: Verify nft_compat kernel module
+        run: |
+          set -eux
+
+          cd wrt
+
+          APK="$(cat /tmp/nft_apk)"
+
+          rm -rf /tmp/nft-check
+          mkdir -p /tmp/nft-check
+
+          tar -xf "$APK" -C /tmp/nft-check
+
+          NFT_KO="$(
+            find /tmp/nft-check \
+              -type f \
+              -name 'nft_compat.ko' \
+              -print -quit
+          )"
+
+          if [ -z "$NFT_KO" ]; then
+            echo "ERROR: nft_compat.ko extraction failed"
+            exit 1
+          fi
+
+          echo "=========================================="
+          echo "NFT COMPAT MODULE"
+          echo "=========================================="
+
           echo "$NFT_KO"
 
           echo
@@ -509,126 +384,100 @@ jobs:
           echo "VERMAGIC:"
           modinfo -F vermagic "$NFT_KO" || true
 
-          VERMAGIC="$(modinfo -F vermagic "$NFT_KO" || true)"
+          VERMAGIC="$(
+            modinfo -F vermagic "$NFT_KO" 2>/dev/null || true
+          )"
 
           case "$VERMAGIC" in
             6.12.106*)
               echo
-              echo "SUCCESS: nft_compat vermagic matches 6.12.106"
+              echo "SUCCESS: vermagic starts with 6.12.106"
               ;;
             *)
               echo
-              echo "ERROR: nft_compat vermagic mismatch"
+              echo "ERROR: vermagic mismatch"
+              echo "Expected: 6.12.106*"
+              echo "Actual:   $VERMAGIC"
               exit 1
               ;;
           esac
 
-      # ==========================================
-      # BUILD REQUIRED PACKAGES
-      # ==========================================
-      - name: Build required packages
+      # ============================================================
+      # VERIFY KERNEL RELEASE
+      # ============================================================
+      - name: Verify kernel release
         run: |
-          set -e
+          set -eux
 
           cd wrt
 
+          KDIR="$(cat /tmp/kdir)"
+
           echo "=========================================="
-          echo "BUILD REQUIRED PACKAGES"
+          echo "KERNEL RELEASE"
           echo "=========================================="
 
-          make package/kernel/linux/compile -j$(nproc)
+          make -s -C "$KDIR" kernelrelease
+
+          RELEASE="$(
+            make -s -C "$KDIR" kernelrelease \
+              | tr -d '\r\n'
+          )"
 
           echo
-          echo "=========================================="
-          echo "SEARCH APK / IPK PACKAGES"
-          echo "=========================================="
+          echo "RELEASE:"
+          echo "$RELEASE"
 
-          find bin \
-            -type f \
-            \( \
-              -name '*kmod-ipt-core*' \
-              -o -name '*kmod-nft-compat*' \
-              -o -name '*iptables-nft*' \
-            \) \
-            -print | sort || true
+          case "$RELEASE" in
+            6.12.106*)
+              echo
+              echo "SUCCESS: kernel release matches 6.12.106"
+              ;;
+            *)
+              echo
+              echo "ERROR: kernel release mismatch"
+              exit 1
+              ;;
+          esac
 
-      # ==========================================
-      # COLLECT ALL REQUIRED FILES
-      # ==========================================
+      # ============================================================
+      # COLLECT RESULT
+      # ============================================================
       - name: Collect result
         run: |
-          set -e
+          set -eux
 
           cd wrt
-
-          echo "=========================================="
-          echo "COLLECT RESULT"
-          echo "=========================================="
 
           mkdir -p result
 
-          find build_dir \
-            -type f \
-            \( \
-              -name 'nft_compat.ko' \
-              -o -name 'x_tables.ko' \
-              -o -name 'ip_tables.ko' \
-              -o -name 'iptable_filter.ko' \
-              -o -name 'iptable_nat.ko' \
-              -o -name 'xt_REDIRECT.ko' \
-              -o -name 'xt_MASQUERADE.ko' \
-              -o -name 'xt_MARK.ko' \
-              -o -name 'xt_NFLOG.ko' \
-              -o -name 'xt_TCPMSS.ko' \
-              -o -name 'xt_comment.ko' \
-              -o -name 'xt_conntrack.ko' \
-              -o -name 'xt_mark.ko' \
-              -o -name 'xt_multiport.ko' \
-              -o -name 'xt_socket.ko' \
-            \) \
-            -exec cp {} result/ \;
+          APK="$(cat /tmp/nft_apk)"
 
-          find bin \
-            -type f \
-            \( \
-              -name '*kmod-ipt-core*.apk' \
-              -o -name '*kmod-nft-compat*.apk' \
-              -o -name '*iptables-nft*.apk' \
-            \) \
-            -exec cp {} result/ \; || true
+          cp "$APK" result/
 
-          echo
           echo "=========================================="
-          echo "RESULT FILES"
+          echo "RESULT"
           echo "=========================================="
 
-          find result -maxdepth 1 -type f -print -exec ls -lh {} \;
+          ls -lh result/
 
           echo
           echo "=========================================="
           echo "SHA256"
           echo "=========================================="
 
-          find result -maxdepth 1 -type f -exec sha256sum {} \;
+          sha256sum result/*
 
           echo
-          echo "=========================================="
-          echo "CHECK"
-          echo "=========================================="
+          echo "SUCCESS: kmod-nft-compat package collected."
 
-          if ! find result -type f -name 'nft_compat.ko' | grep -q .; then
-            echo "ERROR: nft_compat.ko missing"
-            exit 1
-          fi
-
-          echo "SUCCESS: nft_compat.ko collected"
-
-      # ==========================================
+      # ============================================================
       # UPLOAD ARTIFACT
-      # ==========================================
+      # ============================================================
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: iptables-nft-compat-6.12.106
+          name: kmod-nft-compat-6.12.106-qualcommax-ipq60xx
           path: wrt/result/*
           if-no-files-found: error
+          retention-days: 30
